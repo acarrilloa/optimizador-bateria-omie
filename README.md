@@ -8,7 +8,7 @@
 
 ## Características
 
-### Fase F1 (Implementada) …
+### Fase F1 (Implementada) ✅
 
 - **Obtención de precios OMIE a 15 min** vía los sensores de plantilla `sensor.omie_precios_de_es_{ayer,hoy,manana}` (creados con la integración oficial OMIE `omie.get_prices_for_date`).
 - **Fallback REData** (`api.preciodelaluz.es`) si los sensores de plantilla no tienen datos.

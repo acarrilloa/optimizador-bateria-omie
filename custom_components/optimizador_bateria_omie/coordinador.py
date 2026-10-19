@@ -1,5 +1,5 @@
 """Coordinador de datos para la integración Optimizador Batería OMIE."""
-# versión 0.7.0
+# versión 0.7.1
 
 import logging
 from dataclasses import dataclass
@@ -78,11 +78,15 @@ class CoordinadorDatosOmie(DataUpdateCoordinator):
                 precios_manana = None
 
             precios_efectivos_hoy = [
-                self.modelo_tarifa.obtener_precio_efectivo(r.precio_eur_kwh, r.fecha_hora_utc)
+                self.modelo_tarifa.obtener_precio_efectivo(
+                    r.precio_eur_kwh, r.fecha_hora_utc
+                )
                 for r in precios_hoy
             ]
-            clasificaciones_hoy = self.modelo_tarifa.clasificar_por_percentiles(
-                precios_efectivos_hoy
+            # Clasificación POR PERÍODO 2.0TD (valle/llano/punta según
+            # hora local + festivos + fines de semana). No por percentiles.
+            clasificaciones_hoy = self.modelo_tarifa.clasificar_por_periodo(
+                [r.fecha_hora_utc for r in precios_hoy]
             )
             estadisticas_hoy = self.modelo_tarifa.obtener_estadisticas(
                 precios_efectivos_hoy
@@ -95,8 +99,8 @@ class CoordinadorDatosOmie(DataUpdateCoordinator):
                     )
                     for r in precios_manana
                 ]
-                clasificaciones_manana = self.modelo_tarifa.clasificar_por_percentiles(
-                    precios_efectivos_manana
+                clasificaciones_manana = self.modelo_tarifa.clasificar_por_periodo(
+                    [r.fecha_hora_utc for r in precios_manana]
                 )
                 estadisticas_manana = self.modelo_tarifa.obtener_estadisticas(
                     precios_efectivos_manana
