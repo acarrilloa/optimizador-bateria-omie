@@ -1,5 +1,5 @@
 """Cliente para obtener precios de OMIE."""
-# versión 0.7.0
+# versión 0.7.3
 
 import json
 import logging
@@ -96,12 +96,15 @@ class ClienteOmie:
             return []
 
         datos = state.attributes.get("precios")
-        if isinstance(datos, list) and datos:
-            if isinstance(datos[0], dict) and "start" in datos[0] and "price" in datos[0]:
-                _LOGGER.debug(
-                    "%s → %d intervalos", sensor_entity_id, len(datos),
-                )
-                return datos
+        if (
+            isinstance(datos, list)
+            and datos
+            and isinstance(datos[0], dict)
+            and "start" in datos[0]
+            and "price" in datos[0]
+        ):
+            _LOGGER.debug("%s → %d intervalos", sensor_entity_id, len(datos))
+            return datos
 
         _LOGGER.info("Sensor %s sin datos de precios", sensor_entity_id)
         return []
@@ -170,31 +173,78 @@ class ClienteOmie:
 
         return ranuras
 
+    def _leer_cache(self, cache_file: Path) -> list[Ranura] | None:
+        """Lee la caché de un día.
+
+        Método bloqueante: llamar siempre vía
+        ``hass.async_add_executor_job`` para no bloquear el event loop.
+        """
+        try:
+            if not cache_file.exists():
+                return None
+            with open(cache_file, "r", encoding="utf-8") as f:
+                cached = json.load(f)
+        except (OSError, ValueError) as e:
+            _LOGGER.warning("Error leyendo cache %s: %s", cache_file, e)
+            return None
+
+        # La caché se valida a 96 entradas; si no, se descarta (SPEC §9.2)
+        if not cached or len(cached) != 96:
+            return None
+
+        return [
+            Ranura(
+                fecha_hora_utc=datetime.fromisoformat(d["fecha_hora_utc"]),
+                precio_eur_kwh=d["precio_eur_kwh"],
+                fuente=d["fuente"],
+                fecha_publicacion=datetime.fromisoformat(d["fecha_publicacion"]),
+                fecha_hora_fin_utc=(
+                    datetime.fromisoformat(d["fecha_hora_fin_utc"])
+                    if d.get("fecha_hora_fin_utc") else None
+                ),
+            )
+            for d in cached
+        ]
+
+    def _escribir_cache(self, cache_file: Path, ranuras: list) -> None:
+        """Escribe la caché de un día.
+
+        Método bloqueante: llamar siempre vía
+        ``hass.async_add_executor_job`` para no bloquear el event loop.
+        """
+        try:
+            self._dir_cache.mkdir(parents=True, exist_ok=True)
+            with open(cache_file, "w", encoding="utf-8") as f:
+                json.dump(
+                    [
+                        {
+                            "fecha_hora_utc": r.fecha_hora_utc.isoformat(),
+                            "precio_eur_kwh": r.precio_eur_kwh,
+                            "fuente": r.fuente,
+                            "fecha_publicacion": r.fecha_publicacion.isoformat(),
+                            "fecha_hora_fin_utc": (
+                                r.fecha_hora_fin_utc.isoformat()
+                                if r.fecha_hora_fin_utc else None
+                            ),
+                        }
+                        for r in ranuras
+                    ],
+                    f, ensure_ascii=False, indent=2,
+                )
+        except OSError as e:
+            _LOGGER.warning("Error escribiendo cache: %s", e)
+
     async def obtener_precios_del_dia(self, fecha: date) -> list:
         """Obtiene los precios para un día específico."""
         cache_file = self._dir_cache / f"{fecha.strftime('%Y-%m-%d')}.json"
 
-        # 1) Caché
-        if self.config.usar_cache and cache_file.exists():
-            try:
-                with open(cache_file, "r", encoding="utf-8") as f:
-                    cached = json.load(f)
-                if cached and len(cached) == 96:
-                    return [
-                        Ranura(
-                            fecha_hora_utc=datetime.fromisoformat(d["fecha_hora_utc"]),
-                            precio_eur_kwh=d["precio_eur_kwh"],
-                            fuente=d["fuente"],
-                            fecha_publicacion=datetime.fromisoformat(d["fecha_publicacion"]),
-                            fecha_hora_fin_utc=(
-                                datetime.fromisoformat(d["fecha_hora_fin_utc"])
-                                if d.get("fecha_hora_fin_utc") else None
-                            ),
-                        )
-                        for d in cached
-                    ]
-            except (OSError, ValueError) as e:
-                _LOGGER.warning("Error leyendo cache %s: %s", cache_file, e)
+        # 1) Caché (E/S en executor, fuera del event loop)
+        if self.config.usar_cache:
+            cached = await self.hass.async_add_executor_job(
+                self._leer_cache, cache_file
+            )
+            if cached:
+                return cached
 
         # 2) Cascada de fuentes
         datos = None
@@ -224,28 +274,10 @@ class ClienteOmie:
         for r in ranuras:
             r.fuente = fuente
 
-        # 4) Persistir caché
+        # 4) Persistir caché (E/S en executor, fuera del event loop)
         if self.config.usar_cache and ranuras:
-            try:
-                self._dir_cache.mkdir(parents=True, exist_ok=True)
-                with open(cache_file, "w", encoding="utf-8") as f:
-                    json.dump(
-                        [
-                            {
-                                "fecha_hora_utc": r.fecha_hora_utc.isoformat(),
-                                "precio_eur_kwh": r.precio_eur_kwh,
-                                "fuente": r.fuente,
-                                "fecha_publicacion": r.fecha_publicacion.isoformat(),
-                                "fecha_hora_fin_utc": (
-                                    r.fecha_hora_fin_utc.isoformat()
-                                    if r.fecha_hora_fin_utc else None
-                                ),
-                            }
-                            for r in ranuras
-                        ],
-                        f, ensure_ascii=False, indent=2,
-                    )
-            except OSError as e:
-                _LOGGER.warning("Error escribiendo cache: %s", e)
+            await self.hass.async_add_executor_job(
+                self._escribir_cache, cache_file, ranuras
+            )
 
         return ranuras

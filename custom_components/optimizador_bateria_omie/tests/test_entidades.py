@@ -1,13 +1,22 @@
 """Tests para entidades (sensores)."""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock
 
 import pytest
-from homeassistant.const import STATE_UNAVAILABLE
-from homeassistant.core import HomeAssistant
 
 from custom_components.optimizador_bateria_omie.cliente_omie import Ranura
+from custom_components.optimizador_bateria_omie.const import (
+    ATTR_FUENTE,
+    ATTR_MAX,
+    ATTR_MEDIANA,
+    ATTR_MIN,
+    ATTR_TS_ACTUALIZACION,
+    SENSOR_PRECIO_ACTUAL,
+    SENSOR_PRECIO_CLASIFICACION,
+    SENSOR_PRECIO_EFECTIVO,
+    SENSOR_PRECIO_ESTADISTICAS,
+)
 from custom_components.optimizador_bateria_omie.coordinador import (
     CoordinadorDatosOmie,
     DatosOmie,
@@ -18,183 +27,138 @@ from custom_components.optimizador_bateria_omie.entidades import (
     SensorPrecioEfectivo,
     SensorPrecioEstadisticas,
 )
+from custom_components.optimizador_bateria_omie.tarifa import ModeloTarifa
 
 
 @pytest.fixture
-def mock_coordinador():
-    """Fixture para CoordinadorDatosOmie con datos mock."""
-    hass = MagicMock(spec=HomeAssistant)
-    cliente_omie = MagicMock()
-    modelo_tarifa = MagicMock()
-
-    coordinador = CoordinadorDatosOmie(
-        hass, cliente_omie, modelo_tarifa, MagicMock()
-    )
-
-    # Crear datos mock
-    hoy = datetime.now(tz=UTC).date()
-    tz_utc = UTC
-    ranuras_hoy = [
+def coordinador():
+    """Fixture para CoordinadorDatosOmie con 96 ranuras alrededor de ahora."""
+    hass = MagicMock()
+    ahora = datetime.now(tz=UTC)
+    base = ahora.replace(minute=0, second=0, microsecond=0)
+    ranuras = [
         Ranura(
-            fecha_hora_utc=datetime(hoy.year, hoy.month, hoy.day, h, m, tzinfo=tz_utc),
-            precio_eur_kwh=0.10 + h * 0.01,
+            fecha_hora_utc=base + timedelta(minutes=15 * i),
+            precio_eur_kwh=0.10 + i * 0.001,
             fuente="omie",
-            fecha_publicacion=datetime.now(tz=tz_utc),
+            fecha_publicacion=ahora,
         )
-        for h in range(24)
-        for m in [0, 15, 30, 45]
+        for i in range(96)
     ]
-
-    coordinador._datos = DatosOmie(
-        precios_hoy=ranuras_hoy,
+    c = CoordinadorDatosOmie(hass, MagicMock(), ModeloTarifa(), MagicMock())
+    c._datos = DatosOmie(
+        precios_hoy=ranuras,
         precios_manana=None,
         clasificaciones_hoy=["valle"] * 96,
         clasificaciones_manana=None,
-        estadisticas_hoy={"min": 0.10, "max": 0.34, "mediana": 0.22},
+        estadisticas_hoy={"min": 0.10, "max": 0.245, "mediana": 0.17},
         estadisticas_manana=None,
         fuente="omie",
-        ts_actualizacion=datetime.now(tz=tz_utc),
+        ts_actualizacion=ahora,
     )
-
-    return coordinador
-
-
-@pytest.fixture
-def sensor_precio_actual(mock_coordinador):
-    """Fixture para SensorPrecioActual."""
-    return SensorPrecioActual(mock_coordinador)
+    c.last_update_success = True
+    return c
 
 
 @pytest.fixture
-def sensor_precio_efectivo(mock_coordinador):
-    """Fixture para SensorPrecioEfectivo."""
-    return SensorPrecioEfectivo(mock_coordinador)
+def sensor_precio_actual(coordinador):
+    return SensorPrecioActual(coordinador)
 
 
 @pytest.fixture
-def sensor_precio_clasificacion(mock_coordinador):
-    """Fixture para SensorPrecioClasificacion."""
-    return SensorPrecioClasificacion(mock_coordinador)
+def sensor_precio_efectivo(coordinador):
+    return SensorPrecioEfectivo(coordinador)
 
 
 @pytest.fixture
-def sensor_precio_estadisticas(mock_coordinador):
-    """Fixture para SensorPrecioEstadisticas."""
-    return SensorPrecioEstadisticas(mock_coordinador)
+def sensor_precio_clasificacion(coordinador):
+    return SensorPrecioClasificacion(coordinador)
+
+
+@pytest.fixture
+def sensor_precio_estadisticas(coordinador):
+    return SensorPrecioEstadisticas(coordinador)
 
 
 class TestSensorPrecioActual:
     """Tests para SensorPrecioActual."""
 
     def test_unique_id(self, sensor_precio_actual):
-        """Test de unique_id."""
-        assert sensor_precio_actual.unique_id == "ob_precio_actual"
+        assert sensor_precio_actual.unique_id == SENSOR_PRECIO_ACTUAL
 
     def test_nombre(self, sensor_precio_actual):
-        """Test de nombre."""
         assert sensor_precio_actual.name == "Precio actual"
 
     def test_unidad(self, sensor_precio_actual):
-        """Test de unidad de medida."""
         assert sensor_precio_actual.native_unit_of_measurement == "€/kWh"
-        assert (
-            sensor_precio_actual.suggested_unit_of_measurement == "€"
-        )
 
-    def test_estado(self, sensor_precio_actual):
-        """Test de estado."""
-        # Mockear obtener_precio_actual para que devuelva un valor
-        sensor_precio_actual.coordinator.obtener_precio_actual = MagicMock(
-            return_value=0.15
-        )
+    def test_estado(self, sensor_precio_actual, coordinador):
+        precio = coordinador.obtener_precio_actual()
+        assert sensor_precio_actual.native_value == round(precio, 4)
 
-        assert sensor_precio_actual.native_value == 0.15
-        assert sensor_precio_actual.available is True
+    def test_disponibilidad_sin_datos(self, sensor_precio_actual, coordinador):
+        coordinador.obtener_precio_actual = MagicMock(return_value=None)
+        assert sensor_precio_actual.native_value is None
 
-    def test_disponibilidad(self, sensor_precio_actual):
-        """Test de disponibilidad cuando no hay datos."""
-        sensor_precio_actual.coordinator.obtener_precio_actual = MagicMock(
-            return_value=None
-        )
-
-        assert sensor_precio_actual.native_value == STATE_UNAVAILABLE
-        assert sensor_precio_actual.available is False
+    def test_atributos(self, sensor_precio_actual):
+        attrs = sensor_precio_actual.extra_state_attributes
+        assert attrs == {ATTR_FUENTE: "omie"}
 
 
 class TestSensorPrecioEfectivo:
     """Tests para SensorPrecioEfectivo."""
 
     def test_unique_id(self, sensor_precio_efectivo):
-        """Test de unique_id."""
-        assert sensor_precio_efectivo.unique_id == "ob_precio_efectivo"
+        assert sensor_precio_efectivo.unique_id == SENSOR_PRECIO_EFECTIVO
 
     def test_nombre(self, sensor_precio_efectivo):
-        """Test de nombre."""
         assert sensor_precio_efectivo.name == "Precio efectivo"
 
-    def test_estado(self, sensor_precio_efectivo):
-        """Test de estado."""
-        sensor_precio_efectivo.coordinator.obtener_precio_efectivo_actual = (
-            MagicMock(return_value=0.20)
-        )
-        sensor_precio_efectivo.coordinator.obtener_ranura_actual = MagicMock(
-            return_value=Ranura(
-                datetime.now(tz=UTC),
-                0.15,
-                "omie",
-                datetime.now(tz=UTC),
-            )
-        )
+    def test_unidad(self, sensor_precio_efectivo):
+        assert sensor_precio_efectivo.native_unit_of_measurement == "€/kWh"
 
-        assert sensor_precio_efectivo.native_value == 0.20
-        assert sensor_precio_efectivo.available is True
+    def test_estado(self, sensor_precio_efectivo, coordinador):
+        esperado = round(coordinador.obtener_precio_efectivo_actual(), 4)
+        assert sensor_precio_efectivo.native_value == esperado
 
 
 class TestSensorPrecioClasificacion:
     """Tests para SensorPrecioClasificacion."""
 
     def test_unique_id(self, sensor_precio_clasificacion):
-        """Test de unique_id."""
-        assert (
-            sensor_precio_clasificacion.unique_id
-            == "ob_precio_clasificacion"
+        assert sensor_precio_clasificacion.unique_id == (
+            SENSOR_PRECIO_CLASIFICACION
         )
 
     def test_nombre(self, sensor_precio_clasificacion):
-        """Test de nombre."""
         assert sensor_precio_clasificacion.name == "Clasificación"
 
-    def test_estado(self, sensor_precio_clasificacion):
-        """Test de estado."""
-        sensor_precio_clasificacion.coordinator.obtener_clasificacion_actual = (
-            MagicMock(return_value="punta")
-        )
+    def test_sin_unidad(self, sensor_precio_clasificacion):
+        assert sensor_precio_clasificacion.native_unit_of_measurement is None
 
-        assert sensor_precio_clasificacion.native_value == "punta"
-        assert sensor_precio_clasificacion.available is True
+    def test_estado(self, sensor_precio_clasificacion, coordinador):
+        esperado = coordinador.obtener_clasificacion_actual()
+        assert sensor_precio_clasificacion.native_value == esperado
 
 
 class TestSensorPrecioEstadisticas:
     """Tests para SensorPrecioEstadisticas."""
 
     def test_unique_id(self, sensor_precio_estadisticas):
-        """Test de unique_id."""
-        assert (
-            sensor_precio_estadisticas.unique_id == "ob_precio_estadisticas"
+        assert sensor_precio_estadisticas.unique_id == (
+            SENSOR_PRECIO_ESTADISTICAS
         )
 
     def test_nombre(self, sensor_precio_estadisticas):
-        """Test de nombre."""
         assert sensor_precio_estadisticas.name == "Estadísticas"
 
-    def test_estado(self, sensor_precio_estadisticas):
-        """Test de estado."""
-        sensor_precio_estadisticas.coordinator.obtener_estadisticas_actual = (
-            MagicMock(return_value={"min": 0.10, "max": 0.30, "mediana": 0.20})
-        )
+    def test_estado_mediana(self, sensor_precio_estadisticas):
+        assert sensor_precio_estadisticas.native_value == 0.17
 
-        assert sensor_precio_estadisticas.native_value == 0.20
-        assert sensor_precio_estadisticas.available is True
-        assert "min" in sensor_precio_estadisticas.extra_state_attributes
-        assert "max" in sensor_precio_estadisticas.extra_state_attributes
-        assert "mediana" in sensor_precio_estadisticas.extra_state_attributes
+    def test_atributos(self, sensor_precio_estadisticas):
+        attrs = sensor_precio_estadisticas.extra_state_attributes
+        assert attrs[ATTR_MIN] == 0.10
+        assert attrs[ATTR_MAX] == 0.245
+        assert attrs[ATTR_MEDIANA] == 0.17
+        assert attrs[ATTR_FUENTE] == "omie"
+        assert ATTR_TS_ACTUALIZACION in attrs

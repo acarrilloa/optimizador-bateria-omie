@@ -1,10 +1,10 @@
 """Configuración flow para la integración Optimizador Batería OMIE."""
-# versión 0.7.0
+# versión 0.7.3
 
 from typing import Any
 
 import voluptuous as vol
-from homeassistant.config_entries import ConfigFlow, OptionsFlowWithReload
+from homeassistant.config_entries import ConfigFlow
 from homeassistant.data_entry_flow import FlowResult
 
 from custom_components.optimizador_bateria_omie.const import (
