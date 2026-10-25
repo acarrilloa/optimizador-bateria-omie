@@ -1,6 +1,6 @@
 ﻿# Optimizador Batería OMIE
 
-![Versión](https://img.shields.io/badge/versión-0.7.4-blue)
+![Versión](https://img.shields.io/badge/versión-0.7.5-blue)
 ![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2024.6+-41BDF5)
 ![Python](https://img.shields.io/badge/Python-3.12+-3776AB)
 

@@ -1,5 +1,5 @@
 """Cliente para obtener precios de OMIE."""
-# versión 0.7.4
+# versión 0.7.5
 
 import json
 import logging
@@ -171,19 +171,49 @@ class ClienteOmie:
         return ranuras
 
     async def obtener_precios_del_dia(self, fecha: date) -> list:
-        """Obtiene los precios para un día específico."""
+        """Obtiene los precios para un día específico.
+
+        Tolerante a los días de cambio de hora (DST):
+        - 92 tramos: domingo de primavera (CET → CEST).
+        - 96 tramos: día normal.
+        - 100 tramos: domingo de otoño (CEST → CET).
+        """
         cache_file = self._dir_cache / f"{fecha.strftime('%Y-%m-%d')}.json"
 
-        # 1) Caché
-        if self.config.usar_cache and cache_file.exists():
-            try:
+        def _read_cache():
+            if cache_file.exists():
                 with open(cache_file, "r", encoding="utf-8") as f:
-                    cached = json.load(f)
+                    return json.load(f)
+            return None
+
+        def _write_cache(ranuras: list):
+            self._dir_cache.mkdir(parents=True, exist_ok=True)
+            cache_data = [
+                {
+                    "fecha_hora_utc": r.fecha_hora_utc.isoformat(),
+                    "precio_eur_kwh": r.precio_eur_kwh,
+                    "fuente": r.fuente,
+                    "fecha_publicacion": r.fecha_publicacion.isoformat(),
+                    "fecha_hora_fin_utc": (
+                        r.fecha_hora_fin_utc.isoformat()
+                        if r.fecha_hora_fin_utc else None
+                    ),
+                }
+                for r in ranuras
+            ]
+            with open(cache_file, "w", encoding="utf-8") as f:
+                json.dump(cache_data, f, ensure_ascii=False, indent=2)
+
+        # ─── 1) Caché (solo se toca si usar_cache es true) ───
+        if self.config.usar_cache:
+            try:
+                cached_data = await self.hass.async_add_executor_job(_read_cache)
+                # Aceptar los tres casos posibles según el día
                 if cached_data and len(cached_data) in (92, 96, 100):
                     _LOGGER.info(
-                        "Cache válida para %s (día DST) → %d ranuras",
+                        "Cache válida para %s → %d ranuras",
                         fecha, len(cached_data),
-            )
+                    )
                     return [
                         Ranura(
                             fecha_hora_utc=datetime.fromisoformat(d["fecha_hora_utc"]),
@@ -195,61 +225,76 @@ class ClienteOmie:
                                 if d.get("fecha_hora_fin_utc") else None
                             ),
                         )
-                        for d in cached
+                        for d in cached_data
                     ]
+                if cached_data is not None:
+                    _LOGGER.warning(
+                        "Cache para %s tiene %d ranuras (esperado 92, 96 o 100). "
+                        "Se descarta y se pide a la fuente.",
+                        fecha, len(cached_data),
+                    )
             except (OSError, ValueError) as e:
                 _LOGGER.warning("Error leyendo cache %s: %s", cache_file, e)
 
-        # 2) Cascada de fuentes
+        # ─── 2) Cascada de fuentes ───
         datos = None
         fuente = None
 
-        if self.config.fuente_prioritaria == "omie" and "omie" in self.hass.config.components:
+        if (
+            self.config.fuente_prioritaria == "omie"
+            and "omie" in self.hass.config.components
+        ):
             try:
                 datos = await self._obtener_desde_integracion_omie(fecha)
                 fuente = "omie"
+                _LOGGER.info(
+                    "Datos obtenidos de OMIE: %d intervalos",
+                    len(datos or []),
+                )
             except Exception as e:  # noqa: BLE001
-                _LOGGER.warning("OMIE falló: %s", e)
+                _LOGGER.warning("OMIE falló: %s (%s)", e, type(e).__name__)
                 datos = None
 
         if not datos:
             try:
                 datos = await self._obtener_desde_redata(fecha)
                 fuente = "redata"
+                _LOGGER.info(
+                    "Datos obtenidos de REData: %d intervalos",
+                    len(datos or []),
+                )
             except Exception as e:  # noqa: BLE001
                 _LOGGER.warning("REData falló: %s", e)
                 datos = None
 
+        # Descartar si todos los precios son 0.0 (fuente devolvió "vacío")
+        if datos and all(
+            isinstance(d, dict) and float(d.get("price", 0)) == 0.0 for d in datos
+        ):
+            _LOGGER.warning("Todos los precios recibidos son 0.0, descartando fuente")
+            datos = None
+            fuente = None
+
         if not datos:
             raise ErrorFuenteOmie("Todas las fuentes fallaron")
 
-        # 3) Normalizar
+        # ─── 3) Normalizar a 15 min ───
         ranuras = self._normalizar_a_15min(datos, fecha)
         for r in ranuras:
             r.fuente = fuente
 
-        # 4) Persistir caché
+        if len(ranuras) not in (92, 96, 100):
+            _LOGGER.warning(
+                "Normalización de %s produjo %d ranuras "
+                "(esperado 92, 96 o 100)",
+                fecha, len(ranuras),
+            )
+
+        # ─── 4) Persistir caché (solo si usar_cache y hay ranuras) ───
         if self.config.usar_cache and ranuras:
             try:
-                self._dir_cache.mkdir(parents=True, exist_ok=True)
-                with open(cache_file, "w", encoding="utf-8") as f:
-                    json.dump(
-                        [
-                            {
-                                "fecha_hora_utc": r.fecha_hora_utc.isoformat(),
-                                "precio_eur_kwh": r.precio_eur_kwh,
-                                "fuente": r.fuente,
-                                "fecha_publicacion": r.fecha_publicacion.isoformat(),
-                                "fecha_hora_fin_utc": (
-                                    r.fecha_hora_fin_utc.isoformat()
-                                    if r.fecha_hora_fin_utc else None
-                                ),
-                            }
-                            for r in ranuras
-                        ],
-                        f, ensure_ascii=False, indent=2,
-                    )
-            except OSError as e:
-                _LOGGER.warning("Error escribiendo cache: %s", e)
+                await self.hass.async_add_executor_job(_write_cache, ranuras)
+            except (OSError, ValueError) as e:
+                _LOGGER.warning("Error escribiendo cache %s: %s", cache_file, e)
 
         return ranuras
