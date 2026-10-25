@@ -1,5 +1,5 @@
 """Cliente para obtener precios de OMIE."""
-# versión 0.7.0
+# versión 0.7.4
 
 import json
 import logging
@@ -179,7 +179,11 @@ class ClienteOmie:
             try:
                 with open(cache_file, "r", encoding="utf-8") as f:
                     cached = json.load(f)
-                if cached and len(cached) == 96:
+                if cached_data and len(cached_data) in (92, 96, 100):
+                    _LOGGER.info(
+                        "Cache válida para %s (día DST) → %d ranuras",
+                        fecha, len(cached_data),
+            )
                     return [
                         Ranura(
                             fecha_hora_utc=datetime.fromisoformat(d["fecha_hora_utc"]),
