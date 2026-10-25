@@ -262,3 +262,34 @@ class TestFestivos:
         assert not modelo_tarifa_por_defecto.es_fin_de_semana(
             datetime(2025, 1, 20, 0, 0, tzinfo=UTC)  # Lunes
         )
+
+
+class TestClasificarPorPeriodo:
+    """Tests para clasificar_por_periodo (clasificación del sensor)."""
+
+    def test_dia_laborable(self, modelo_tarifa_por_defecto):
+        """Día laborable: los tres períodos aparecen en sus franjas."""
+        # Miércoles 15/01/2025, hora local CET = UTC+1
+        fechas = [
+            datetime(2025, 1, 15, 12, 0, tzinfo=UTC),  # 13:00 local → punta
+            datetime(2025, 1, 15, 14, 0, tzinfo=UTC),  # 15:00 local → llano
+            datetime(2025, 1, 15, 5, 0, tzinfo=UTC),   # 06:00 local → valle
+        ]
+        clasificaciones = modelo_tarifa_por_defecto.clasificar_por_periodo(fechas)
+        assert clasificaciones == ["punta", "llano", "valle"]
+
+    def test_fin_de_semana_todo_valle(self, modelo_tarifa_por_defecto):
+        """Sábado: valle todo el día."""
+        fechas = [
+            datetime(2025, 1, 18, h, 0, tzinfo=UTC) for h in range(24)
+        ]
+        clasificaciones = modelo_tarifa_por_defecto.clasificar_por_periodo(fechas)
+        assert set(clasificaciones) == {"valle"}
+
+    def test_festivo_todo_valle(self, modelo_tarifa_por_defecto):
+        """Festivo nacional (1 de enero): valle todo el día."""
+        fechas = [
+            datetime(2025, 1, 1, h, 0, tzinfo=UTC) for h in range(24)
+        ]
+        clasificaciones = modelo_tarifa_por_defecto.clasificar_por_periodo(fechas)
+        assert set(clasificaciones) == {"valle"}

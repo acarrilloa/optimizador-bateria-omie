@@ -1,5 +1,5 @@
 """Plataforma de sensores para la integración Optimizador Batería OMIE."""
-# versión 0.7.0
+# versión 0.7.3
 
 import logging
 
@@ -10,6 +10,11 @@ from custom_components.optimizador_bateria_omie.cliente_omie import (
     ClienteOmie,
     ConfiguracionOmie,
 )
+from custom_components.optimizador_bateria_omie.const import (
+    DEFAULT_DIAS_CACHE,
+    DEFAULT_FUENTE_PRIORITARIA,
+    DEFAULT_USAR_CACHE,
+)
 from custom_components.optimizador_bateria_omie.coordinador import CoordinadorDatosOmie
 from custom_components.optimizador_bateria_omie.entidades import (
     SensorPrecioActual,
@@ -18,12 +23,6 @@ from custom_components.optimizador_bateria_omie.entidades import (
     SensorPrecioEstadisticas,
 )
 from custom_components.optimizador_bateria_omie.tarifa import ModeloTarifa
-
-from custom_components.optimizador_bateria_omie.const import (
-    DEFAULT_DIAS_CACHE,
-    DEFAULT_FUENTE_PRIORITARIA,
-    DEFAULT_USAR_CACHE,
-)
 
 _LOGGER = logging.getLogger(__name__)
 
