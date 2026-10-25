@@ -1,5 +1,5 @@
 """Plataforma de sensores para la integración Optimizador Batería OMIE."""
-# versión 0.7.3
+# versión 0.7.6
 
 import logging
 
@@ -21,6 +21,7 @@ from custom_components.optimizador_bateria_omie.entidades import (
     SensorPrecioClasificacion,
     SensorPrecioEfectivo,
     SensorPrecioEstadisticas,
+    SensorPreciosEfectivosHoy,
 )
 from custom_components.optimizador_bateria_omie.tarifa import ModeloTarifa
 
@@ -54,5 +55,6 @@ async def async_setup_entry(
             SensorPrecioEfectivo(coordinador),
             SensorPrecioClasificacion(coordinador),
             SensorPrecioEstadisticas(coordinador),
+            SensorPreciosEfectivosHoy(coordinador),
         ]
     )

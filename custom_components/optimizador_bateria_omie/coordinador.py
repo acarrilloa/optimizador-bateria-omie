@@ -1,5 +1,5 @@
 """Coordinador de datos para la integración Optimizador Batería OMIE."""
-# versión 0.7.1
+# versión 0.7.6
 
 import logging
 from dataclasses import dataclass
@@ -187,3 +187,20 @@ class CoordinadorDatosOmie(DataUpdateCoordinator):
     def obtener_estadisticas_actual(self) -> dict | None:
         """Obtiene las estadísticas actuales."""
         return self._datos.estadisticas_hoy
+
+    def obtener_precios_efectivos_ordenados(self) -> list[dict]:
+        """Curva de precios efectivos del día: [{hora, precio}, ...]."""
+        if not self._datos or not self._datos.precios_hoy:
+            return []
+        return [
+            {
+                "hora": r.fecha_hora_utc.astimezone().strftime("%H:%M"),
+                "precio": round(
+                    self.modelo_tarifa.obtener_precio_efectivo(
+                        r.precio_eur_kwh, r.fecha_hora_utc
+                    ),
+                    4,
+                ),
+            }
+            for r in self._datos.precios_hoy
+        ]

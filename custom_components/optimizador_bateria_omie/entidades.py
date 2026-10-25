@@ -1,5 +1,5 @@
 """Entidades (sensores) para la integración Optimizador Batería OMIE."""
-# versión 0.7.0
+# versión 0.7.6
 
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.helpers.entity import DeviceInfo
@@ -96,4 +96,23 @@ class SensorPrecioEstadisticas(SensorBase):
             ATTR_MEDIANA: est.get(ATTR_MEDIANA, 0),
             ATTR_FUENTE: datos.fuente,
             ATTR_TS_ACTUALIZACION: datos.ts_actualizacion.isoformat(),
+        }
+
+class SensorPreciosEfectivosHoy(SensorBase):
+    """Curva de precios efectivos (peajes + cargos + impuestos) del día."""
+
+    _attr_unique_id = "optimizador_bateria_omie_precios_efectivos_hoy"
+    _attr_name = "Precios efectivos hoy"
+    _attr_icon = "mdi:chart-timeline-variant-shimmer"
+    _attr_native_unit_of_measurement = "€/kWh"
+
+    @property
+    def native_value(self) -> float | None:
+        est = self.coordinator.obtener_estadisticas_actual()
+        return est.get("mediana") if est else None
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        return {
+            "precios_ordenados": self.coordinator.obtener_precios_efectivos_ordenados()
         }
