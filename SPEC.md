@@ -1,13 +1,14 @@
-# Diseño y Especificación — `optimizador_bateria_omie`
+# Diseño y Especificación — `optimizador_bateria_omie` (Actualizado a v0.8.0 con convención Deye)
 
 **Custom component de Home Assistant** para optimizar carga/descarga de batería (inversor Deye vía datalogger Solarman) con precios del mercado eléctrico español en tramos de 15 minutos (OMIE) y predicción de consumo del hogar.
 
-> **Estado del documento** (octubre 2026). Este documento es la **fuente única de verdad** del proyecto. Se actualiza a medida que avanzan las fases.
+> **Estado del documento** (octubre 2026). Este documento es la **fuente única de verdad** del proyecto.
 >
-> - **F1** — Precios: ✅ **implementada y en producción doméstica** (versión **0.7.1**).
-> - **F2** a **F6** — Telemetría, predicción, planificación y control: 🚧 **diseño**, no implementadas.
+> - **F1** — Precios: ✅ **implementada y en producción doméstica** (manifest **0.7.3**).
+> - **F2** — Telemetría Solarman: 🚧 **en ejecución**. Plan `docs/PLAN_F2.md` **v1.2 aprobado** (Opción C, ver §5.2.2). Versión de cierre prevista **0.8.0**.
+> - **F3** a **F6** — 🚧 diseño, no implementadas.
 >
-> A lo largo del documento, cada apartado lleva la marca **✅ F1** o **🚧 Fn** según corresponda.
+> A lo largo del documento, cada apartado lleva la marca **✅ F1**, **🚧 F2 (en ejecución)** o **🚧 Fn** según corresponda.
 
 ---
 
@@ -15,15 +16,15 @@
 
 El componente se ejecuta dentro de Home Assistant y, en su versión completa (F1–F6), hará lo siguiente:
 
-1. **Obtener los precios del mercado diario OMIE con resolución de 15 minutos** (MTU15, operativo en España desde el 1 de octubre de 2025).
-2. **Leer por Solarman (Modbus local)** el estado del inversor Deye: SOC de batería, potencias de carga/descarga, consumo de casa, producción fotovoltaica, estado de red.
-3. **Predecir el consumo** de la casa con un modelo que usa histórico + calendario (laborable/festivo/vacaciones, hora, día de semana) + clima (temperatura exterior, irradiancia).
-4. **Calcular un plan horario por tramos de 15 min** que prioriza el autoconsumo y aplica arbitraje (comprar barato / vender caro) solo cuando es rentable tras aplicar la eficiencia round-trip y los parámetros ajustables del usuario.
-5. **Aplicar el plan escribiendo** en el inversor (corriente de carga/descarga, límites de SOC, carga desde red, venta a red) con salvaguardas: modo dry-run, límite de escrituras, watchdog y fallback a autoconsumo básico si algo falla.
+1. **Obtener los precios del mercado diario OMIE con resolución de 15 minutos** (MTU15, operativo en España desde el 1 de octubre de 2025). ✅ F1
+2. **Leer por Solarman (Modbus local)** el estado del inversor Deye: SOC de batería, potencias de carga/descarga, consumo de casa, producción fotovoltaica, estado de red. 🚧 F2 (en ejecución, solo lectura)
+3. **Predecir el consumo** de la casa con un modelo que usa histórico + calendario (laborable/festivo/vacaciones, hora, día de semana) + clima (temperatura exterior, irradiancia). 🚧 F3/F5
+4. **Calcular un plan horario por tramos de 15 min** que prioriza el autoconsumo y aplica arbitraje (comprar barato / vender caro) solo cuando es rentable tras aplicar la eficiencia round-trip y los parámetros ajustables del usuario. 🚧 F3/F5
+5. **Aplicar el plan escribiendo** en el inversor (corriente de carga/descarga, límites de SOC, carga desde red, venta a red) con salvaguardas: modo dry-run, límite de escrituras, watchdog y fallback a autoconsumo básico si algo falla. 🚧 F4
 
 Prioridad de estrategia (fijada por el usuario): **autoconsumo + arbitraje cuando convenga**.
 
-En la fase actual (F1), el componente **solo implementa el punto 1**: obtiene los precios, calcula el precio efectivo con peajes/cargos/impuestos 2.0TD, los clasifica por período tarifario y publica cuatro sensores de solo lectura.
+Estado actual: **F1 en producción** (punto 1 completo: precios, precio efectivo 2.0TD, clasificación y estadísticas en 4 sensores de solo lectura). **F2 en ejecución**: añade telemetría local del inversor vía Modbus con mapa de registros configurable, validación por sonda y **sin ninguna escritura al inversor en esta fase**.
 
 ---
 
@@ -34,16 +35,16 @@ En la fase actual (F1), el componente **solo implementa el punto 1**: obtiene lo
 | Plataforma | Home Assistant Yellow (HAOS), en uso desde ~2023 |
 | Inversor | **Deye SUN-6K-SG05LP1-EU-AM2-P** — híbrido monofásico, 6.000 W nominales, PV máx. 7.800 W, rango de batería 40–60 V, corriente máx. de carga/descarga configurable **0–135 A** |
 | Batería | **Docan 51,2 V 300 Ah LiFePO4** — **15,36 kWh nominales**; fabricante recomienda 140 A de carga/descarga (máx. 200 A), pero el límite real lo impone el inversor (135 A ≈ 6,9 kW) |
-| Datalogger | Solarman serie **3178171873**, IP fija **192.168.1.76** |
+| Datalogger | Solarman serie **3178171873**, IP fija **192.168.1.76**, puerto **8899** |
 | Históricos | Node-RED + InfluxDB (producción y consumo), estadísticas de HA |
-| **Fuente de precios** | **Integración oficial OMIE** + plantilla `precios_omie.yaml` (ver §5.1). Sustituye a la antigua plantilla RESTful `config/plantillas/energia.yaml` |
+| **Fuente de precios** | **Integración oficial OMIE** + plantilla `precios_omie.yaml` (ver §5.1) |
 | Clima | Integración weather de HA (pendiente de confirmar en F3) |
 | Tarifa | Indexada **2.0TD** con **5,75 kW contratados**; peajes y cargos en §5.6 |
 | Remuneración de excedentes | **Al mismo precio que la compra** (contrato con mayorista) |
 
 Supuestos confirmados: inversor, batería, datalogger Solarman, tarifa 2.0TD con 5,75 kW y remuneración simétrica.
 
-Pendientes de confirmar: entidad de clima, lista de festivos locales y previsión FV (opcional).
+Pendientes de confirmar: entidad de clima, lista de festivos locales y previsión FV (opcional). En F2: offsets exactos de la familia B dentro de 4210–4233 (TODO en `registers.yaml`).
 
 ---
 
@@ -55,22 +56,26 @@ Pendientes de confirmar: entidad de clima, lista de festivos locales y previsió
 - Fuentes en cascada con registro del origen en atributos:
   1. **Sensores de plantilla** `sensor.omie_precios_de_es_ayer`, `_hoy` y `_manana`, creados por el usuario a partir de la acción `omie.get_prices_for_date` de la integración oficial OMIE (ver §5.1).
   2. **REData** (`https://api.preciodelaluz.es/v1/prices?date=...`) como fallback si los sensores no contienen datos.
-- **Caché en disco** por día (`custom_components/optimizador_bateria_omie/cache/YYYY-MM-DD.json`), validada a 96 tramos, que sobrevive a reinicios y evita saturar las fuentes.
+- **Caché en disco** por día (`cache/YYYY-MM-DD.json`), validada a 96 tramos, que sobrevive a reinicios y evita saturar las fuentes.
 - **Refresco**: coordinador cada 15 minutos + triggers de la plantilla (13:35 CET para precios D+1 y 00:05 CET para rotación de día) + arranque de HA.
 - **Exponer** (vía sensores): precio del tramo actual, precio efectivo, clasificación por **período 2.0TD** (valle/llano/punta) y estadísticas del día (mín/máx/mediana).
 
-> **Deuda técnica**: la dependencia de los sensores de plantilla se puede eliminar en F2 añadiendo un cliente directo contra la API pública de OMIE (`api.omie.es`), manteniendo la plantilla como acelerador opcional.
+> **Deuda técnica** (§12.3): #1 limpieza de caché por `dias_cache`, #2 backoff/timeout en REData y #7 log con tramos mañana se resuelven en F2; #3 (cliente directo `api.omie.es`) es opcional en F2 y **solo si existe un endpoint a 15 min** — no se interpola el mercado horario.
 
-### RF-02 — Telemetría Solarman 🚧 F2
+### RF-02 — Telemetría Solarman 🚧 F2 (en ejecución)
 
-- Conexión **local** al datalogger Solarman vía `pysolarmanv5` (TCP, puerto 8899, nº de serie del datalogger) mediante Modbus.
-- Lecturas periódicas (por defecto cada 30 s, configurable): SOC batería, tensión/corriente/potencia batería, temperatura; consumo de casa (W y energía acumulada); producción FV; importación/exportación de red; estado del inversor; parámetros actuales de control (corrientes y límites programados).
-- Persistencia interna de históricos de consumo a 15 min (para el predictor) en `data_interval_statistics` / SQLite propio, además de lo que ya exista en InfluxDB.
+- Conexión **local** al datalogger Solarman vía `pysolarmanv5` (TCP, puerto 8899) mediante Modbus.
+- Lecturas periódicas (por defecto cada 30 s) de: SOC, potencia de batería (W, con signo Deye), corriente de batería (A), consumo de casa (W) y producción FV (W).
+- **Convención de signos (crítico):** Para evitar romper tarjetas y gráficos existentes, se adopta la **convención nativa de Deye**:
+  - **`potencia_bateria` > 0** → **Descarga** (la batería entrega energía).
+  - **`potencia_bateria` < 0** → **Carga** (la batería absorbe energía).
+  - El `registers.yaml` incluye un flag `invertir_signo` (default `false`) por si en el futuro se necesita invertir la convención sin tocar código.
+- **F2 es estrictamente de solo lectura**: no existe método `escribir_registros` en el cliente.
 
 ### RF-03 — Control de carga/descarga 🚧 F4
 
 - Servicios para ajustar, en cualquier momento: corriente/potencia de carga, corriente/potencia de descarga, SOC objetivo de carga, SOC mínimo, habilitación de carga desde red, habilitación de venta a red.
-- **Mapa de registros configurable en YAML** (`registers.yaml`); el componente no debe hardcodear direcciones. Modo `probe_registers` que lee un registro, lo compara con el valor mostrado en pantalla/APP y valida antes de permitir escrituras.
+- **Mapa de registros configurable en YAML** (`registers.yaml`); el componente no debe hardcodear direcciones. El servicio `probe_registers` (creado en F2) valida la familia antes de permitir escrituras; escrituras bloqueadas hasta validación.
 - Límite de seguridad: máximo N escrituras por hora (por defecto 12) y verificación de lectura tras escritura (write-verify).
 
 ### RF-04 — Compra/venta con parámetros ajustables 🚧 F4/F5
@@ -88,7 +93,7 @@ Pendientes de confirmar: entidad de clima, lista de festivos locales y previsió
   - Clima: temperatura exterior (media prevista del tramo), irradiancia/previsión solar si está disponible.
   - Histórico: consumo del mismo tramo en los últimos N días (N configurable, por defecto 28), percentiles por tramo×tipo de día.
 - Implementación por capas (fallback en cascada):
-  1. **Modelo ML** (Gradient Boosting / LightGBM con scikit-learn), reentrenado semanalmente por la noche, con métricas de backtesting (MAPE) expuestas como sensor diagnóstico (F5).
+  1. **Modelo ML** (Gradient Boosting / LightGBM con scikit-learn), reentrenado semanalmente por noche, con métricas de backtesting (MAPE) expuestas como sensor diagnóstico (F5).
   2. **Perfil estadístico**: mediana del consumo por tramo y tipo de día (laborable/festivo/vacaciones) (F3).
   3. **Persistencia**: consumo del mismo día de la semana anterior.
 - La predicción incluye banda de incertidumbre (p10–p90) que el planificador puede usar de forma conservadora.
@@ -109,26 +114,34 @@ Pendientes de confirmar: entidad de clima, lista de festivos locales y previsió
 ```mermaid
 flowchart TD
   subgraph Fuentes
-    OMIE["Integración OMIE + plantilla\n(sensores omie_precios_de_es_*)"]
-    REDATA["REData\n(fallback)"]
-    SOLAR["Datalogger Solarman\n(F2+)"]
-    WEATHER["Clima / calendario\n(F3+)"]
-    HIST["Histórico consumo\n(F3+)"]
+    OMIE[\"Integración OMIE + plantilla\n(sensores omie_precios_de_es_*)\"]
+    REDATA[\"REData\n(fallback)\"]
+    SOLAR[\"Datalogger Solarman\n(Modbus TCP, puerto 8899)\"]
+    HAENT[\"Entidades Solarman HA\n(opcional ha_entities)\"]
+    WEATHER[\"Clima / calendario\n(F3+)\"]
+    HIST[\"Histórico consumo\n(F3+)\"]
   end
-  subgraph Componente["optimizador_bateria_omie"]
-    PRICE["ClienteOmie ✅ F1"]
-    TARIFF["ModeloTarifa ✅ F1"]
-    COORD["CoordinadorDatosOmie ✅ F1"]
-    CONFIG["Config Flow + Entidades ✅ F1"]
-    TELEM["SolarmanClient 🚧 F2"]
-    FORECAST["ConsumptionForecaster 🚧 F3/F5"]
-    PLANNER["Planner 🚧 F3/F5"]
-    EXECUTOR["Executor 🚧 F4"]
-    AUDIT["Audit / Stats 🚧 F5"]
+  subgraph Componente[\"optimizador_bateria_omie\"]
+    PRICE[\"ClienteOmie ✅ F1\"]
+    TARIFF[\"ModeloTarifa ✅ F1\"]
+    COORD[\"CoordinadorDatosOmie ✅ F1\"]
+    CONFIG[\"Config Flow + Entidades ✅ F1\"]
+    MAPA[\"MapaRegistros 🚧 F2\"]
+    TELEM[\"ClienteSolarman 🚧 F2\"]
+    CTEL[\"CoordinadorTelemetria 🚧 F2\"]
+    PROBE[\"probe_registers 🚧 F2\"]
+    FORECAST[\"ConsumptionForecaster 🚧 F3/F5\"]
+    PLANNER[\"Planner 🚧 F3/F5\"]
+    EXECUTOR[\"Executor 🚧 F4\"]
+    AUDIT[\"Audit / Stats 🚧 F5\"]
   end
   OMIE --> PRICE
   REDATA --> PRICE
   SOLAR --> TELEM
+  HAENT --> CTEL
+  MAPA --> TELEM
+  TELEM --> CTEL
+  PROBE --> TELEM
   HIST --> FORECAST
   WEATHER --> FORECAST
   PRICE --> TARIFF
@@ -136,16 +149,16 @@ flowchart TD
   TARIFF --> COORD
   TARIFF --> PLANNER
   COORD --> CONFIG
+  CTEL --> PLANNER
   FORECAST --> PLANNER
-  TELEM --> PLANNER
   CONFIG --> PLANNER
   PLANNER --> EXECUTOR
   EXECUTOR --> SOLAR
   PLANNER --> AUDIT
-  TELEM --> AUDIT
+  CTEL --> AUDIT
 ```
 
-### 4.2 Ciclo de actualización (F1)
+### 4.2 Ciclo de actualización (F1) ✅
 
 ```mermaid
 sequenceDiagram
@@ -162,7 +175,7 @@ sequenceDiagram
   alt caché válida
     Cache-->>CL: 96 ranuras
   else sin caché
-    CL->>P: leer state.attributes["precios"]
+    CL->>P: leer state.attributes[\"precios\"]
     alt OMIE OK
       P-->>CL: 96 dicts {start, price}
     else OMIE sin datos
@@ -177,7 +190,33 @@ sequenceDiagram
   E->>E: native_value por sensor
 ```
 
-### 4.3 Máquina de estados de la batería (F4+, referencia)
+### 4.3 Ciclo de telemetría (F2) 🚧
+
+```mermaid
+sequenceDiagram
+  participant T as Temporizador (30 s, configurable)
+  participant C as CoordinadorTelemetria
+  participant S as ClienteSolarman
+  participant D as Datalogger Solarman (Modbus)
+  participant E as Entidades telemetría + diagnóstico
+  T->>C: _async_update_data
+  alt telemetry_source == solarman_modbus
+    C->>S: leer_telemetria()
+    S->>S: asyncio.Lock + trocear bloques ≤ 16
+    S->>D: read_holding_registers (executor)
+    alt lectura falla
+      S->>S: reconexión backoff (máx 3 intentos, tope 5 s)
+      S-->>C: ErrorComunicacionSolarman → UpdateFailed
+    end
+    S-->>C: TelemetriaInversor (scale + signed aplicados)
+  else telemetry_source == ha_entities
+    C->>C: hass.states.get × 4 entity_id
+  end
+  C-->>E: sin familia validada → sensores unavailable
+  C-->>E: con familia validada → SOC / potencias publicadas
+```
+
+### 4.4 Máquina de estados de la batería (F4+, referencia)
 
 ```mermaid
 stateDiagram-v2
@@ -210,9 +249,10 @@ Fichero: `custom_components/optimizador_bateria_omie/cliente_omie.py`.
 | Método | Descripción |
 |---|---|
 | `_obtener_desde_integracion_omie(fecha)` | Localiza el sensor `sensor.omie_precios_de_es_{ayer,hoy,manana}` correspondiente (usando fecha **local**) y devuelve `state.attributes["precios"]` como `list[dict]` con `{start, price}`. Devuelve `[]` si no hay datos. |
-| `_obtener_desde_redata(fecha)` | HTTP GET a `api.preciodelaluz.es`. Devuelve `list[dict]` o `[]`. |
+| `_obtener_desde_redata(fecha)` | HTTP GET a `api.preciodelaluz.es`. Devuelve `list[dict]` o `[]`. 🚧 F2: `ClientTimeout(total=10)` explícito + 2 reintentos con backoff (0,5 s, 2 s). |
 | `_normalizar_a_15min(datos, fecha)` | Convierte `list[dict]` a `list[Ranura]`. Solo soporta el formato OMIE `{start, end, price}` con timezone. Loguea warning si no se obtienen exactamente 96 ranuras. |
 | `obtener_precios_del_dia(fecha)` | Flujo completo: caché → cascada de fuentes (OMIE → REData) → normalización → persistir caché. Lanza `ErrorFuenteOmie` si todas las fuentes fallan. |
+| `limpiar_cache_antigua(dias)` 🚧 F2 | (deuda #1) Borra `cache/*.json` con `mtime > dias * 86400`, en executor. Ejecutado en el arranque y por job diario a las 04:30. |
 
 **Decisiones de diseño de F1**:
 
@@ -225,123 +265,120 @@ Fichero: `custom_components/optimizador_bateria_omie/cliente_omie.py`.
 | Caché | Válida solo si tiene **exactamente 96 ranuras** | Evita que un JSON con `[]` o incompleto bloquee la fuente real. |
 | Zona horaria | Selección de sensor por **fecha local** (`datetime.now().astimezone().date()`) | Los sensores de plantilla se indexan por `now().date()` local; compararlos con UTC desfasaba 2 h en CEST. |
 
-**Plantilla externa requerida** (`precios_omie.yaml`):
+**Plantilla externa requerida** (`precios_omie.yaml`): sin cambios respecto a F1 (tres sensores `omie_precios_de_es_{ayer,hoy,manana}` alimentados por `omie.get_prices_for_date` con triggers a las 13:35 y 00:05).
 
-La integración **depende** de que el usuario tenga esta plantilla activa en HA:
+**F2+**: `_obtener_desde_api_omie()` es **opcional** y solo se implementará si se confirma un endpoint de la API pública a **15 min**. La API de mercado entrega precios **horarios**: interpolar a 15 min está prohibido (inventar valores). En caso negativo, queda TODO documentado.
 
-```yaml
-- trigger:
-    - platform: homeassistant
-      event: start
-    - platform: time
-      at: "13:35:00"
-    - platform: time
-      at: "00:05:00"
-  action:
-    - action: omie.get_prices_for_date
-      data:
-        date: "{{ (now() - timedelta(days=1)).date() }}"
-        countries: [es, pt]
-      response_variable: precios_ayer
-      continue_on_error: true
-    - action: omie.get_prices_for_date
-      data:
-        date: "{{ now().date() }}"
-        countries: [es, pt]
-      response_variable: precios_hoy
-      continue_on_error: true
-    - if:
-        - condition: template
-          value_template: >
-            {{ now().hour > 13 or (now().hour == 13 and now().minute >= 35) }}
-      then:
-        - action: omie.get_prices_for_date
-          data:
-            date: "{{ (now() + timedelta(days=1)).date() }}"
-            countries: [es, pt]
-          response_variable: precios_manana
-          continue_on_error: true
-      else:
-        - variables:
-            precios_manana: {}
-  sensor:
-    - name: "OMIE precios de ES ayer"
-      unique_id: omie_precios_es_ayer
-      state: "{{ now().isoformat() }}"
-      attributes:
-        precios: >
-          {% set datos = (precios_ayer | default({})).es | default([]) %}
-          {% set ns = namespace(out=[]) %}
-          {% for d in datos %}
-            {% set ns.out = ns.out + [{'start': d.start, 'price': d.price | float | round(4)}] %}
-          {% endfor %}
-          {{ ns.out }}
-    - name: "OMIE precios de ES hoy"
-      unique_id: omie_precios_es_hoy
-      state: "{{ now().isoformat() }}"
-      attributes:
-        precios: >
-          {% set datos = (precios_hoy | default({})).es | default([]) %}
-          {% set ns = namespace(out=[]) %}
-          {% for d in datos %}
-            {% set ns.out = ns.out + [{'start': d.start, 'price': d.price | float | round(4)}] %}
-          {% endfor %}
-          {{ ns.out }}
-    - name: "OMIE precios de ES mañana"
-      unique_id: omie_precios_es_manana
-      state: "{{ now().isoformat() }}"
-      attributes:
-        precios: >
-          {% set datos = (precios_manana | default({})).es | default([]) %}
-          {% set ns = namespace(out=[]) %}
-          {% for d in datos %}
-            {% set ns.out = ns.out + [{'start': d.start, 'price': d.price | float | round(4)}] %}
-          {% endfor %}
-          {{ ns.out }}
-```
+### 5.2 `ClienteSolarman` 🚧 F2 (en ejecución)
 
-**F2+**: se podrá añadir `_obtener_desde_api_omie()` para prescindir de la plantilla si se desea.
+Ficheros: `solarman_client.py` (clase **`ClienteSolarman`**, convención española de F1), `telemetria.py` (`TelemetriaInversor` + `CoordinadorTelemetria`), `mapa_registros.py` (`MapaRegistros`).
 
-### 5.2 `SolarmanClient` 🚧 F2
+**`ClienteSolarman(hass, ip, puerto, serie, mapa: MapaRegistros)`**:
 
-- Wrapper sobre **pysolarmanv5**: `PySolarmanV5(ip, serial, port=8899, verbose=False)` con `read_holding_registers(addr, qty)` y `write_multiple_holding_registers(addr, values)`.
-- Polling asíncrono con `asyncio` (`pysolarmanv5` es bloqueante → ejecutar en `executor`), reconexión automática, semáforo para serializar escrituras.
-- **Modo solo-lectura opcional**: si el usuario prefiere, la telemetría puede consumirse de las entidades de la integración Solarman ya instalada (via `hass.states`), reservando la conexión Modbus propia únicamente para escrituras. Opción `telemetry_source: solarman_modbus | ha_entities` en el config flow.
+- Crea `PySolarmanV5` bajo demanda en executor.
+- `leer_registros(addr, qty)`: trocea a bloques ≤ 16, serializa con `asyncio.Lock`.
+- **Reconexión con backoff acotado**: 3 intentos máx, tope 5 s por intento (peor caso ≈ 10 s), sin bloquear más de un ciclo.
+- `leer_telemetria(familia: str) -> TelemetriaInversor`: **la familia llega por parámetro** (el cliente no consulta el Store). Aplica `scale`, `signed` (two's complement 16-bit) e `invertir_signo` si procede.
+- **No incluye `escribir_registros`** en F2 (reservado a F4).
 
-### 5.3 Mapa de registros Deye 🚧 F2
+**`TelemetriaInversor`** (dataclass):
+- `soc: float | None`
+- `potencia_bateria: float | None` (W, **+ descarga / − carga** — convención Deye)
+- `corriente_bateria: float | None` (A)
+- `consumo_casa: float | None` (W)
+- `produccion_fv: float | None` (W)
+- `ts_actualizacion: datetime`
 
-⚠️ **El SUN-6K-SG05LP1-EU-AM2-P monta placa de la generación "AM2"**, cuya dirección de registros difiere de las generaciones anteriores. La comunidad documenta dos familias candidatas; el componente debe arrancar en modo `probe` (lectura y comparación con pantalla/APP) y **solo habilitar escrituras tras validar la familia correcta**:
+**`CoordinadorTelemetria`**:
+- Intervalo `intervalo_telemetria_s` (default 30 s).
+- `_async_update_data()`: si `solarman_modbus` y no hay familia validada → `UpdateFailed` **antes** de tocar Modbus (evita conexiones inútiles). Si hay familia, delega en `ClienteSolarman`.
+
+**`MapaRegistros`**:
+- Carga `registers.yaml` con prioridad: `config/optimizador_bateria_omie/registers.yaml` (override usuario) > empaquetado.
+- API: `familias()`, `direccion()`, `parametros()` (incluye `invertir_signo`), `plausibility()`, `probe()`, `block_size`.
+- Aplica two's complement 16-bit si `signed: true` y luego `invertir_signo` si es `true`.
+
+**Persistencia de validación**: `hass.storage.Store` (clave `optimizador_bateria_omie/probe.json`) guarda `{familia, probe_addr, probe_funcion, ultima_validacion_ts}`. Al arrancar, si `probe_addr` cambió en el YAML, se invalida.
+
+**Config flow (F2)**: campos nuevos con defaults editables (`ip`, `puerto`, `serie`, `telemetry_source`, `intervalo_telemetria_s`, 4 `entity_id` condicionales). `async_step_reconfigure` para editar sin recrear.
+
+### 5.2.2 Modificaciones confirmadas del plan F2 (v1.2, Opción C)
+
+| # | Modificación |
+|---|---|
+| **C3** | **Signo Deye**: `potencia_bateria` = **+ descarga / − carga**. `registers.yaml` incluye `signo_semantico` e `invertir_signo` (default `false`). |
+| **C4** | `leer_telemetria(familia: str)`: familia por parámetro; el coordinador resuelve. |
+| **C5** | `UpdateFailed` **antes** de tocar Modbus si no hay familia validada. |
+| **M1** | Tolerancia ±2 % en `probe_registers`. |
+| **M2** | Plausibilidad parametrizada en `registers.yaml` (SOC 0–100, |P_bat| ≤ 7000 W). |
+| **M3** | `reset: true` en `probe_registers` borra la validación. |
+| **M4** | Backoff acotado (3 intentos, tope 5 s/intento). |
+| **M5** | Limpieza de caché en arranque + job diario 04:30 (idempotente). |
+| **M6** | `async_step_reconfigure` en config flow. |
+| **M7** | `register` opcional (default: `probe.addr`); `familia` opcional. |
+| **M8** | Conversión signed two's complement 16-bit explícita + test con valor negativo. |
+| **M9** | `supports_response=SupportsResponse.OPTIONAL` en el servicio. |
+| **M10** | Sensor diagnóstico `familia_validada` con estado `ninguna | A | B`. |
+| **M11** | (Nuevo) `SensorCorrienteBateria` como 5º sensor de telemetría. |
+| **M12** | (Nuevo) `InversorFake` con `connect()`/`disconnect()`. |
+| **M13** | (Nuevo) `pysolarmanv5>=1.1.0,<2.0.0` en requirements. |
+| **M14** | (Nuevo) Override de `registers.yaml` en `config/optimizador_bateria_omie/`. |
+
+### 5.3 Mapa de registros Deye (`registers.yaml`) 🚧 F2
+
+⚠️ **El SUN-6K-SG05LP1-EU-AM2-P monta placa de la generación "AM2"**, cuya dirección de registros difiere de las generaciones anteriores. La comunidad documenta dos familias candidatas; el componente arranca en modo `probe` y **solo habilita escrituras tras validar la familia correcta**:
 
 | Función | Familia A (placas nuevas SG04LP3/AM2/HP3) | Familia B (placas clásicas SG01/03LP1) |
 |---|---|---|
-| SOC / potencia batería | 586–591 (588 SOC, 590 potencia ±, 591 corriente) | 4210–4233 aprox. |
+| SOC / potencia batería | 586–591 (588 SOC, 590 potencia ±, 591 corriente) | 4210–4233 aprox. (**offsets exactos TODO**) |
 | Corriente de carga objetivo | 128 (A, 0–135 para 6 kW) | dentro del bloque TOU |
 | Flags de control (carga red, SOC límites) | 108, 130, 166, 172 | 4341 y afines |
-| Time-of-Use (slots) | direcciones propias, hasta 6 slots | 4310–4312 (habilitación), 4315–4338 (6 programas) |
+| Time-of-Use (slots) | direcciones propias de la placa, hasta 6 slots | 4310–4312 (habilitación), 4315–4338 (6 programas) |
 
 Señalización comunitaria: en esta generación conviene limitar las peticiones Modbus a bloques ≤ 16 registros para evitar timeouts.
 
-Esquema del `registers.yaml`:
+Esquema del `registers.yaml` (perfil `deye-sun-6k-sg05lp1-am2`, dos familias):
 
 ```yaml
 inverter: "deye-sun-6k-sg05lp1-am2"
-telemetry:
-  soc:      { addr: 588, scale: 0.1, unit: "%" }
-  bat_power:{ addr: 590, scale: 1,   unit: "W", signed: true }
-  load_power:{ addr: 670, scale: 0.1, unit: "W" }
-  pv_power: { addr: 633, scale: 0.1, unit: "W" }
-control:
-  charge_current_a: { addr: 128, min: 0, max: 135 }
-  charge_from_grid: { addr: 166, write: [0, 1] }
-  soc_charge_limit: { addr: 172, scale: 1, min: 10, max: 100 }
-  soc_discharge_limit: { addr: 108, scale: 1, min: 10, max: 100 }
-tou_slots:
-  enabled: true
-  max_slots: 6
-  block_size: 16
+block_size: 16
+familias:
+  A:                       # placas nuevas SG04LP3 / AM2 / HP3
+    probe:
+      funcion: soc
+      addr: 588
+    plausibility:
+      soc: [0, 100]
+      potencia_bat: [-7000, 7000]
+    telemetria:
+      soc:            { addr: 588, scale: 0.1, unit: "%" }
+      potencia_bat:   { addr: 590, scale: 1,   unit: "W", signed: true, invertir_signo: false, signo_semantico: "+descarga/-carga" }
+      corriente_bat:  { addr: 591, scale: 0.1, unit: "A", signed: true }
+      consumo_casa:   { addr: 670, scale: 0.1, unit: "W" }
+      produccion_fv:  { addr: 633, scale: 0.1, unit: "W" }
+    control:                # solo lectura en F2; ningún código de F2 lo invoca
+      corriente_carga: { addr: 128, min: 0, max: 135 }
+      carga_desde_red: { addr: 166 }
+      limite_carga:    { addr: 172, min: 10, max: 100 }
+      limite_descarga: { addr: 108, min: 10, max: 100 }
+  B:                       # placas clásicas SG01/03LP1
+    probe:
+      funcion: soc
+      addr: 4212           # TODO: dirección exacta del SOC dentro de 4210-4233
+    telemetria:
+      soc:            { addr: 4212, scale: 1, unit: "%" }   # TODO confirmar
+      potencia_bat:   { addr: 4214, scale: 1, unit: "W", signed: true }  # TODO
+      consumo_casa:   { addr: 4226, scale: 0.1, unit: "W" }  # TODO
+      produccion_fv:  { addr: 4229, scale: 0.1, unit: "W" }  # TODO
+    control:
+      tou_habilitacion: { addr: 4310 }
+      tou_programas:   { addr: 4315, qty: 24 }
 ```
 
-Las direcciones son **configuración, no constantes de código**. El servicio `probe_registers` valida la familia A/B antes de habilitar escrituras.
+Notas:
+- Las direcciones son **configuración, no constantes de código**; el acceso pasa siempre por `MapaRegistros`. Si falta una dirección: `TODO` documentado y se continúa sin esa magnitud.
+- Los `TODO` de la familia B son advertencias del validador, no errores: la comunidad documenta el bloque 4210–4233, no el offset exacto de cada magnitud. El validador del mapa no rompe el arranque por un TODO.
+- El bloque `control` se incluye por completitud (F4 lo usará); en F2 **ningún código lo invoca**.
 
 ### 5.4 `ConsumptionForecaster` 🚧 F3/F5
 
@@ -375,7 +412,7 @@ Fichero: `custom_components/optimizador_bateria_omie/tarifa.py`.
 | Período | Días | Horas locales | Peaje €/kWh | Cargo €/kWh | **Total €/kWh** |
 |---|---|---|---|---|---|
 | Punta | L–V | 10:00–14:00 y 18:00–22:00 | 0,033261 | 0,064292 | **0,097553** |
-| Llano | L–V | 08:00–10:00, 14:00–18:00, 22:00–24:00 | 0,016409 | 0,012858 | **0,029267** |
+| Llano | L–V | 08:00–10:00, 14:00–18:00 y 22:00–24:00 | 0,016409 | 0,012858 | **0,029267** |
 | Valle | L–V | 00:00–08:00 | 0,000077 | 0,003215 | **0,003292** |
 | Valle | S–D y festivos nacionales | 00:00–24:00 | 0,000077 | 0,003215 | **0,003292** |
 
@@ -402,7 +439,7 @@ con IE = 5,1127 % y IVA = 21 % por defecto (configurables en `ConfiguracionTarif
 - `obtener_periodo(fecha_hora_utc)` convierte primero la fecha UTC a local y clasifica:
   - **Fines de semana y festivos nacionales → `valle` todo el día.**
   - Laborables: `punta` (10–14 h y 18–22 h), `llano` (8–10 h, 14–18 h y 22–24 h), `valle` (resto).
-- El sensor `precio_clasificacion` usa **`clasificar_por_periodo`** (período 2.0TD real), **no** `clasificar_por_percentiles`. La clasificación por percentiles se conserva como utilidad auxiliar reservada para el planner (F3+), que puede necesitar saber si un tramo es caro *dentro* del día independientemente del período tarifario.
+- El sensor `precio_clasificacion` usa **`clasificar_por_periodo`** (período 2.0TD real), **no** `clasificar_por_percentiles`. La clasificación por percentiles se conserva como utilidad auxiliar reservada para el planner (F3+).
 
 **Funciones implementadas**:
 
@@ -455,7 +492,9 @@ clasificaciones_hoy = self.modelo_tarifa.clasificar_por_periodo(
 
 **Detalle crítico**: `_buscar_ranura` recorre las ranuras comparando `fecha_hora_utc <= ahora < fecha_hora_fin_utc`. Como `ahora` está en UTC y las ranuras se almacenan en UTC, la comparación es correcta independientemente de la zona local. Para cubrir la madrugada local (00:00–02:00 CEST), `obtener_precio_actual` cae a `precios_manana` si no encuentra coincidencia en `precios_hoy`.
 
-### 5.8 `entidades.py` ✅ F1
+**🚧 F2 (deuda #7)**: el log de éxito pasa a `Datos actualizados. Fuente: X, tramos hoy: N, tramos mañana: M`.
+
+### 5.8 `entidades.py` ✅ F1 (+ `entidades_solarman.py` 🚧 F2)
 
 Fichero: `custom_components/optimizador_bateria_omie/entidades.py`.
 
@@ -477,24 +516,34 @@ class SensorBase(CoordinatorEntity, SensorEntity):
 
 > ⚠️ **La herencia de `SensorEntity` es crítica**. Sin ella, `Entity.state` devuelve `STATE_UNKNOWN` y `native_value` no se consulta nunca. Fue el bug raíz que mantuvo los sensores en `unknown` durante la depuración de la versión 0.6.x.
 
-**Clases de sensor**: `SensorPrecioActual`, `SensorPrecioEfectivo`, `SensorPrecioClasificacion`, `SensorPrecioEstadisticas`. Ver §6 para detalles.
+**Clases de sensor F1**: `SensorPrecioActual`, `SensorPrecioEfectivo`, `SensorPrecioClasificacion`, `SensorPrecioEstadisticas`. Ver §6 para detalles.
 
-### 5.9 `sensor.py` ✅ F1
+**🚧 F2 — `entidades_solarman.py`**: cuatro sensores con la misma base (`CoordinatorEntity, SensorEntity`, `has_entity_name`, mismo `device_info` — mismo dispositivo que los 4 de precios), más un sensor diagnóstico (M10):
 
-Fichero: `custom_components/optimizador_bateria_omie/sensor.py`.
+| Clase | unique_id | Unidad | Estado |
+|---|---|---|---|
+| `SensorSocBateria` | `optimizador_bateria_omie_soc_bateria` | % | SOC |
+| `SensorPotenciaBateria` | `optimizador_bateria_omie_potencia_bateria` | W | + carga / − descarga |
+| `SensorConsumoCasa` | `optimizador_bateria_omie_consumo_casa` | W | consumo instantáneo |
+| `SensorProduccionFv` | `optimizador_bateria_omie_produccion_fv` | W | producción FV |
+| `SensorFamiliaValidada` (diagnostic) | `optimizador_bateria_omie_familia_validada` | — | `ninguna` / `A` / `B` |
+
+### 5.9 `sensor.py` ✅ F1 (+ extensión F2)
 
 Setup de la plataforma. Lee `entry.data` para construir `ConfiguracionOmie` con los parámetros elegidos en el config flow (no con defaults hardcodeados). Crea el `ClienteOmie`, el `CoordinadorDatosOmie`, ejecuta `async_config_entry_first_refresh()` (no rompe si falla) y añade las cuatro entidades.
 
-### 5.10 `config_flow.py` ✅ F1
+**🚧 F2**: además, siempre que haya entrada de telemetría (con defaults), crea `MapaRegistros` + `CoordinadorTelemetria` y añade las 5 entidades de §5.8. `ClienteSolarman` solo se instancia si `telemetry_source == solarman_modbus`.
 
-Fichero: `custom_components/optimizador_bateria_omie/config_flow.py`.
+### 5.10 `config_flow.py` ✅ F1 (+ extensión F2)
 
-- Un solo paso `user` con `CONFIG_SCHEMA` de tres campos.
-- `VERSION = 1`.
+- Un solo paso `user` con `CONFIG_SCHEMA` de tres campos (F1).
+- `VERSION = 1` (se mantiene en F2).
 - `_abort_if_unique_id_configured()`: instancia única.
-- Sin `OptionsFlow` en F1.
+- Sin `OptionsFlow` en F1 (deuda #4, F3).
 - **`fuente_prioritaria`** restringido a `vol.In(["omie", "redata"])`.
 - **`dias_cache`** con `vol.All(int, vol.Range(min=1, max=30))`.
+
+**🚧 F2**: campos nuevos en el esquema (§5.2): `ip`, `puerto`, `serie`, `telemetry_source`, `intervalo_telemetria_s` y 4 `entity_id` condicionales (esquema dinámico en dos pasos `user` → `telemetria`). La entrada de producción se lee con `entry.data.get(clave, default)` — sin migración ni bump de `VERSION` (D11). **`async_step_reconfigure`** para editar la entrada existente sin borrarla y recrearla (M6).
 
 ---
 
@@ -502,7 +551,7 @@ Fichero: `custom_components/optimizador_bateria_omie/config_flow.py`.
 
 ### 6.1 Entidades implementadas ✅ F1
 
-Los `entity_id` dependen del nombre del dispositivo/entrada de configuración. En la instalación de referencia son `sensor.inversor_optimizador_bateria_omie_*`; en otras instalaciones variarán según el nombre del dispositivo. Los `unique_id` son estables: `optimizador_bateria_omie_precio_actual`, `_precio_efectivo`, `_precio_clasificacion`, `_precio_estadisticas`.
+Los `entity_id` dependen del nombre del dispositivo/entrada de configuración. En la instalación de referencia son `sensor.inversor_optimizador_bateria_omie_*`. Los `unique_id` son estables: `optimizador_bateria_omie_precio_actual`, `_precio_efectivo`, `_precio_clasificacion`, `_precio_estadisticas`.
 
 #### `sensor.*_precio_actual`
 
@@ -519,8 +568,6 @@ Los `entity_id` dependen del nombre del dispositivo/entrada de configuración. E
 |---|---|
 | Estado | Precio efectivo = `(spot + peaje + cargo) × (1 + IE) × (1 + IVA)`, 4 decimales |
 | Unidad | €/kWh |
-| Atributos | — |
-| Disponibilidad | `obtener_precio_efectivo_actual() is not None` |
 
 #### `sensor.*_precio_clasificacion`
 
@@ -528,8 +575,6 @@ Los `entity_id` dependen del nombre del dispositivo/entrada de configuración. E
 |---|---|
 | Estado | `valle` / `llano` / `punta` **según período 2.0TD** (no por percentiles) |
 | Unidad | — |
-| Atributos | — |
-| Disponibilidad | `obtener_clasificacion_actual() is not None` |
 
 Comportamiento:
 - **Fines de semana y festivos nacionales** → `valle` todo el día.
@@ -540,11 +585,23 @@ Comportamiento:
 | Campo | Valor |
 |---|---|
 | Estado | **Mediana** del día (€/kWh) |
-| Unidad | €/kWh |
 | Atributos | `min`, `max`, `mediana`, `fuente`, `ts_actualizacion` |
-| Disponibilidad | `obtener_estadisticas_actual() is not None` |
 
-### 6.2 Entidades planificadas 🚧 F2–F5
+### 6.2 Entidades F2 — telemetría 🚧 F2 (en ejecución)
+
+`unique_id` con prefijo `optimizador_bateria_omie_` (detalles en §5.8):
+
+| Entidad | Tipo | Descripción |
+|---|---|---|
+| `sensor.*_soc_bateria` | sensor (%) | SOC de la batería |
+| `sensor.*_potencia_bateria` | sensor (W, signed) | + carga / − descarga |
+| `sensor.*_consumo_casa` | sensor (W) | consumo instantáneo |
+| `sensor.*_produccion_fv` | sensor (W) | producción fotovoltaica |
+| `sensor.*_familia_validada` | diagnostic | `ninguna` / `A` / `B` — expone por qué la telemetría está `unavailable` sin abrir logs |
+
+Los cuatro sensores de telemetría **no publican valores hasta que exista familia validada** (modo `solarman_modbus`); hasta entonces quedan `unavailable`.
+
+### 6.3 Entidades planificadas 🚧 F3–F5
 
 Todas con prefijo `optimizador_bateria_omie_*` en sus `unique_id`:
 
@@ -566,7 +623,48 @@ Todas con prefijo `optimizador_bateria_omie_*` en sus `unique_id`:
 | `number.*_potencia_max_red` | number (W) | potencia contratada / importación máxima | F4 |
 | `number.*_eficiencia_round_trip` | number (%) | 70–95 | F4 |
 
-### 6.3 Servicios 🚧 F3/F4
+### 6.4 Servicios
+
+**F2 🚧 — `optimizador_bateria_omie.probe_registers`** (semántica v1.1 con M1–M3 y M7; registrado con `supports_response=SupportsResponse.OPTIONAL`):
+
+```yaml
+optimizador_bateria_omie.probe_registers:
+  fields:
+    expected:
+      description: "Valor esperado: el SOC % que muestra la pantalla o la APP Solarman"
+      example: 73
+      required: true
+      selector:
+        number: {}
+    register:
+      description: "Dirección a sondear (opcional; por defecto, el probe.addr de cada familia)"
+      example: 588
+      required: false
+      selector:
+        number:
+          min: 1
+          max: 9999
+    familia:
+      description: "Sondear solo esta familia (opcional)"
+      example: "A"
+      required: false
+      selector:
+        select: { options: ["A", "B"] }
+    reset:
+      description: "Borra la validación persistida y vuelve a unavailable, sin sondear"
+      example: true
+      required: false
+      default: false
+      selector: { boolean: {} }
+```
+
+Comportamiento:
+1. `reset: true` → borra `familia_validada` del `hass.storage`, telemetría vuelve a `unavailable`, respuesta `{"reset": true}`. Fin.
+2. Lee el registro SOC de cada familia (o de la indicada en `familia`) vía Modbus.
+3. Compara con `expected` con **tolerancia ±2 %** (M1) y verifica **plausibilidad** de la familia (M2: `|potencia_bat| ≤ 7000 W`, SOC en 0–100). Respuesta por familia: `leído`, `esperado`, `desviacion_pct`, `plausible`, `resultado`.
+4. Si **exactamente una** familia acierta SOC + plausibilidad → persiste `familia_validada` en `hass.storage` y recarga la telemetría. Si ambas o ninguna → `WARNING`, sin validación (escrituras siguen bloqueadas).
+
+**F3/F4 🚧** (referencia, no implementados):
 
 ```yaml
 # Regenerar plan ya (tras cambiar parámetros)
@@ -579,20 +677,15 @@ optimizador_bateria_omie.force_mode:
 
 # Volver al plan automático
 optimizador_bateria_omie.release_manual: {}
-
-# Calibración/validación del mapa de registros (F2)
-optimizador_bateria_omie.probe_registers:
-  register: 588
-  expected: 73
 ```
 
 ---
 
 ## 7. Parámetros ajustables
 
-### 7.1 Config flow actual ✅ F1
+### 7.1 Config flow actual ✅ F1 (+ campos F2 🚧)
 
-Tres claves, todas persistidas en `entry.data`:
+Tres claves F1, persistidas en `entry.data`:
 
 | Parámetro | Tipo | Defecto | Rango / valores |
 |---|---|---|---|
@@ -600,16 +693,24 @@ Tres claves, todas persistidas en `entry.data`:
 | `usar_cache` | bool | `true` | — |
 | `dias_cache` | int | `7` | 1–30 |
 
-Sin `OptionsFlow` en F1.
+Campos nuevos F2 (defaults editables, leídos con `entry.data.get(clave, default)`; la entrada de producción de F1 no se rompe):
+
+| Parámetro | Tipo | Defecto | Rango / valores |
+|---|---|---|---|
+| `ip` | str | `192.168.1.76` | — |
+| `puerto` | int | `8899` | 1–65535 |
+| `serie` | str | `3178171873` | — |
+| `telemetry_source` | selección | `solarman_modbus` | `solarman_modbus`, `ha_entities` |
+| `intervalo_telemetria_s` | int | `30` | 10–300 |
+| `entity_id_soc`… (×4) | str | vacío | solo con `ha_entities`; TODO documentado, sin inventar ids |
+
+Sin `OptionsFlow` hasta F3 (deuda #4); `async_step_reconfigure` disponible desde F2 (M6).
 
 ### 7.2 Modelo de tarifa actual ✅ F1
 
-Hardcodeado en `tarifa.py`:
+Hardcodeado en `tarifa.py` (mover a `entry.data` es deuda #5, F4):
 
-- Peajes y cargos de §5.6.
-- Impuesto eléctrico 5,1127 %.
-- IVA 21 %.
-- `aplicar_impuestos_precio = true`.
+- Peajes y cargos de §5.6. Impuesto eléctrico 5,1127 %. IVA 21 %. `aplicar_impuestos_precio = true`.
 - Potencia contratada 5,75 kW (declarada; no aplicada como restricción en F1).
 
 ### 7.3 Esquema completo planificado 🚧 (referencia, no implementado)
@@ -635,9 +736,10 @@ optimizador_bateria_omie:
       p2: { peaje_kw_dia: 0.001216, cargo_kw_mes: 0.000772 }
   solarman:
     ip: 192.168.1.76
-    port: 8899
-    serial: 3178171873
+    puerto: 8899
+    serie: 3178171873
     telemetry_source: solarman_modbus   # o ha_entities
+    intervalo_telemetria_s: 30           # 10-300
     register_profile: deye-sun-6k-sg05lp1-am2
   battery:
     capacidad_kwh: 15.36
@@ -666,7 +768,7 @@ optimizador_bateria_omie:
     desviacion_soc_replan_pct: 10
 ```
 
-En F4+, todos los parámetros de `strategy`, `battery` y `seguridad.dry_run` se expondrán como entidades modificables en caliente (config flow + `options`).
+En F4+, los parámetros de `strategy`, `battery` y `seguridad.dry_run` se expondrán como entidades modificables en caliente (config flow + `options`).
 
 ---
 
@@ -674,9 +776,9 @@ En F4+, todos los parámetros de `strategy`, `battery` y `seguridad.dry_run` se 
 
 | Fase | Alcance | Estado | Criterio de salida |
 |---|---|---|---|
-| **F1 — Precios** | `ClienteOmie` (plantilla + REData + caché) + `ModeloTarifa` + `CoordinadorDatosOmie` + 4 sensores + config flow | ✅ **completada** | Los precios del tramo actual coinciden con `sensor.omie_precios_de_es_hoy`; clasificación coherente con períodos 2.0TD (verificado en laborables, fines de semana y festivos); precio efectivo validado contra facturación esperada durante 3 días seguidos |
-| **F2 — Solarman** | `SolarmanClient` (Modbus local) + `registers.yaml` + servicio `probe_registers`; telemetría en HA | 🚧 pendiente | SOC y potencias coinciden con la APP Solarman; familia A/B validada |
-| **F3 — Predicción v1 + Planificador greedy** | Forecaster estadístico (perfil por tramo×tipo de día) + planner greedy en `dry_run`; sensor plan + ahorro estimado | 🚧 pendiente | Plan diario plausible revisado manualmente 1 semana en `dry_run` |
+| **F1 — Precios** | `ClienteOmie` (plantilla + REData + caché) + `ModeloTarifa` + `CoordinadorDatosOmie` + 4 sensores + config flow | ✅ **completada** (0.7.1; rama main 0.7.3) | Precios del tramo coinciden con `sensor.omie_precios_de_es_hoy`; clasificación coherente con períodos 2.0TD; precio efectivo validado contra facturación esperada 3 días seguidos |
+| **F2 — Solarman** | `ClienteSolarman` (Modbus local, solo lectura) + `MapaRegistros` + `registers.yaml` (familias A/B) + servicio `probe_registers` (tolerancia, plausibilidad, reset) + 5 entidades de telemetría + deuda F1 (#1, #2, #7; #3 opcional) | 🚧 **en ejecución** (PLAN_F2 v1.1 confirmado; cierre previsto 0.8.0) | SOC y potencias coinciden con la APP Solarman; familia A/B validada con tolerancia + plausibilidad (resetable); **ninguna escritura**; `pytest` en verde (incluida regresión de los 62 tests de F1) + `ruff check` limpio |
+| **F3 — Predicción v1 + Planificador greedy** | Forecaster estadístico (perfil por tramo×tipo de día) + planner greedy en `dry_run`; sensor plan + ahorro estimado; OptionsFlow (deuda #4) | 🚧 pendiente | Plan diario plausible revisado manualmente 1 semana en `dry_run` |
 | **F4 — Control** | Executor con write-verify, límite de escrituras, fallback y watchdog; activación real gradual (solo carga desde red en valle nocturno) | 🚧 pendiente | 1 semana sin errores; verificación de escrituras en inversor |
 | **F5 — ML + LP** | Forecaster ML (calendario+clima), optimización LP, banda p90, auditoría de ahorro real, reentrenamiento semanal | 🚧 pendiente | MAPE de backtest < 20 % en tramos de alto consumo; ahorro real medible |
 | **F6 — Pulido** | Dashboard Lovelace completo, notificaciones de decisiones relevantes, exportación de informes mensuales | 🚧 pendiente | Uso continuado 30 días sin intervención |
@@ -689,25 +791,32 @@ En F4+, todos los parámetros de `strategy`, `battery` y `seguridad.dry_run` se 
 
 - `dry_run` por defecto `true` (aplica en F4+): el plan se publica pero nunca escribe hasta validación explícita del usuario.
 - **Write-verify**: tras cada escritura, relectura del registro; a los 3 fallos consecutivos → estado `fallback` (reestablecer modo autoconsumo nativo del inversor) y deshabilitar escrituras hasta intervención.
+- **Escrituras bloqueadas hasta validación de familia** (F2+): `escribir_registros()` levanta `ErrorEscriturasDeshabilitadas` sin `familia_validada` persistida; en F2, además, nadie lo invoca.
 - **Nunca permitir**: SOC objetivo < límite de descarga del inversor, corrientes > límites del `registers.yaml`, escrituras cuando el inversor reporte alarma/fault.
 - **Guard de potencia contratada**: la importación medida (consumo + carga batería) nunca debe superar **5,75 kW**; si supera el 95 %, el Executor reduce la corriente de carga de la batería.
-- **Si no hay precios para el día siguiente** → plan solo con lo disponible; si tampoco hay datos hoy → mantener autoconsumo (no inventar planes).
+- **Si no hay precios para el día siguiente** → plan solo con lo disponible; si tampoco hay datos hoy → mantener autoconsumo (no inventar planes). Análogamente: **sin familia validada no se publica telemetría** (no inventar valores del mapa equivocado) y **no se interpola el mercado horario a 15 min** (deuda #3).
 - **Auditoría inmutable** (JSONL en directorio de datos) de: cada plan, cada escritura, cada error.
 
-### 9.2 Aplicación en F1
+### 9.2 Aplicación en F1 ✅ y F2 🚧
 
 En F1 solo aplica:
 
 - El coordinador **nunca escribe** en ningún dispositivo: todos los sensores son de solo lectura.
 - Si todas las fuentes de precios fallan, `_async_update_data` lanza `UpdateFailed` y los sensores quedan en `unavailable`/`unknown` (no se inventan valores).
 - La caché se valida a 96 entradas antes de usarse; un JSON corrupto o incompleto se descarta y se vuelve a pedir a la fuente.
-- Los logs de éxito incluyen `Datos actualizados. Fuente: <fuente>, tramos hoy: <n>` para auditoría manual.
+- Los logs de éxito incluyen fuente y nº de tramos (F2 añade `tramos mañana` y desviación — deuda #7).
+
+En F2 se añade:
+
+- **F2 es estrictamente de solo lectura**: ningún método escribe en el inversor; el método de escritura queda guardado por `ErrorEscriturasDeshabilitadas`.
+- Peticiones Modbus troceadas a ≤ 16 registros, serializadas con `asyncio.Lock`, en executor; backoff acotado que nunca bloquea más de un ciclo del coordinador (M4).
+- Datos de conexión como defaults editables del config flow, nunca constantes de código.
 
 ---
 
 ## 10. Pruebas exigidas (CI)
 
-### 10.1 F1 ✅ (pendiente de añadir a CI)
+### 10.1 F1 ✅ (en suite, pendiente de añadir a CI; 62 tests en verde)
 
 - `tests/test_normalizar_a_15min.py`: cubre 96 tramos nominales, día con cambio horario (92/100 tramos), formato con `end` y sin `end`, formatos inválidos.
 - `tests/test_cliente_omie.py`: mock de `hass.states.get` devolviendo `precios` válidos, vacíos y ausentes; verifica la selección del sensor por fecha local.
@@ -716,54 +825,74 @@ En F1 solo aplica:
   - `obtener_periodo` con casos de laborable/punta, laborable/llano, laborable/valle, sábado, domingo y festivo nacional.
   - `clasificar_por_periodo` sobre una lista de timestamps que cubre un día laborable completo y un domingo completo; verifica que **todos los tramos del domingo son `valle`**.
   - `clasificar_por_percentiles` (utilidad auxiliar) con distribuciones conocidas.
-- `tests/test_coordinador.py`: `_async_update_data` con `ClienteOmie` mockeado; verifica `return self._datos`, el manejo de `UpdateFailed` y que `clasificaciones_hoy` proviene de `clasificar_por_periodo` (no de `clasificar_por_percentiles`).
+- `tests/test_coordinador.py`: `_async_update_data` con `ClienteOmie` mockeado; verifica `return self._datos`, el manejo de `UpdateFailed` y que `clasificaciones_hoy` proviene de `clasificar_por_periodo`.
 
-### 10.2 F2+
+### 10.2 F2 🚧 (en ejecución)
 
-- `tests/test_solarman_client.py`: fake inverter con mapa de registros para probar lectura/escritura sin hardware.
+- `tests/fake_inversor.py` — **simulador fake reutilizable**: `InversorFake` con mapa de registros `dict[int, int]` (familias A y B), misma interfaz Modbus que `PySolarmanV5` (`read_holding_registers`, `write_multiple_holding_registers`) + inyección de fallos (timeouts, desconexiones, contador de llamadas, assert de tamaño máximo de bloque ≤ 16). `PySolarmanV5` nunca se usa directamente en tests: el fake se inyecta en `ClienteSolarman`.
+- `tests/test_solarman_client.py`: lecturas correctas por familia; **troceado de bloques > 16** (se piden 32 y el fake registra dos peticiones ≤ 16); semáforo (accesos concurrentes serializados); **reconexión con backoff acotado** (primer intento falla, segundo OK; 3 intentos máx con tope 5 s); timeout (N fallos → `ErrorComunicacionSolarman`); **conversión signed two's complement** con valor negativo de potencia (M8); `escribir_registros` siempre levanta `ErrorEscriturasDeshabilitadas`.
+- `tests/test_probe_registers.py`: familia A valida (SOC dentro de tolerancia ±2 % + plausibilidad), familia B no; coincidencia de SOC **sin** plausibilidad → sin validación (M2); **ninguna** acierta → sin validación y escrituras bloqueadas; `reset: true` borra el flag (M3); flag persistido en storage mock se lee al reinicializar; respuesta del servicio con `desviacion_pct` por familia (M1).
+- `tests/test_mantenimiento.py` (deuda F1): limpieza de caché (ficheros con `mtime > dias_cache * 86400` borrados, recientes conservados; **también en arranque**, M5) y backoff de REData (timeout explícito 10 s, 2 reintentos; `async_get_clientsession` parcheado como en F1).
+- Tests del config flow: entrada de producción sin campos nuevos no se rompe (`entry.data.get`), esquema dinámico con `ha_entities`, `async_step_reconfigure` (M6).
+- Regresión completa de la suite de F1 (62 tests).
+
+### 10.3 F3+ (referencia)
+
 - `tests/test_planner.py`: escenarios día valle/punta clásico, precio negativo, rampa de precios, SOC inicial 0/50/100, venta deshabilitada, restricción de potencia contratada.
 - `tests/test_forecaster.py`: dataset sintético + backtesting reproducible (seed fija).
 
-### 10.3 Herramientas
+### 10.4 Herramientas
 
-- `pytest` con `pytest-homeassistant-custom-component`.
+- `pytest` con `pytest-homeassistant-custom-component` (fallback: hass mockeado con `MagicMock`, como en F1, documentado en `RESULTADO_F2.md`).
 - Lint: `ruff check` + constraints de HA y Python.
 - Se aceptan fixtures JSON de OMIE/REData con casos reales de días de cambio horario.
 
 ---
 
-## 11. Estructura del repositorio (estado F1)
+## 11. Estructura del repositorio (estado F1, + ficheros F2)
 
 ```
 optimizador-bateria-omie/
 ├── custom_components/
 │   └── optimizador_bateria_omie/
-│       ├── __init__.py          # async_setup_entry / async_unload_entry
-│       ├── manifest.json        # versión, requisitos, dependencias
-│       ├── const.py             # DOMAIN, defaults, ATTR_*, FESTIVOS_ESPANA
-│       ├── config_flow.py       # ConfigFlow (instancia única)
-│       ├── cliente_omie.py      # ClienteOmie + Ranura + errores
+│       ├── __init__.py          # async_setup_entry / async_unload_entry (+ F2: registro probe_registers, carga validación, job limpieza caché)
+│       ├── manifest.json        # versión, requisitos (+ F2: pysolarmanv5, PyYAML; 0.8.0)
+│       ├── const.py             # DOMAIN, defaults, ATTR_*, FESTIVOS_ESPANA (+ F2: CONF_IP, CONF_PUERTO, CONF_SERIE, CONF_TELEMETRY_SOURCE, CONF_INTERVALO_TELEMETRIA, SERVICE_PROBE_REGISTERS)
+│       ├── config_flow.py       # ConfigFlow (instancia única) (+ F2: campos telemetría, async_step_reconfigure)
+│       ├── cliente_omie.py      # ClienteOmie + Ranura + errores (+ F2: limpiar_cache_antigua, backoff REData)
 │       ├── tarifa.py            # ModeloTarifa + ConfiguracionTarifa + PeriodoTarifa
-│       ├── coordinador.py       # CoordinadorDatosOmie + DatosOmie
+│       ├── coordinador.py       # CoordinadorDatosOmie + DatosOmie (+ F2: log tramos mañana)
 │       ├── entidades.py         # SensorBase + 4 sensores
-│       ├── sensor.py            # async_setup_entry de plataforma sensor
+│       ├── sensor.py            # setup de plataforma (+ F2: telemetría)
 │       ├── strings.json         # Etiquetas del config flow
 │       ├── cache/               # (runtime) YYYY-MM-DD.json
-│       └── tests/               # (a crear en la próxima iteración)
+│       ├── tests/
+│       │   └── (suite F1, 62 tests)
+│       ├── registers.yaml       # 🚧 F2 (familias A/B)
+│       ├── mapa_registros.py    # 🚧 F2 MapaRegistros
+│       ├── solarman_client.py   # 🚧 F2 ClienteSolarman
+│       ├── telemetria.py        # 🚧 F2 TelemetriaInversor + CoordinadorTelemetria
+│       ├── entidades_solarman.py# 🚧 F2 4 sensores + diagnostic
+│       ├── services.py          # 🚧 F2 probe_registers
+│       ├── services.yaml        # 🚧 F2
+│       └── translations/es.json # 🚧 F2
 ├── hacs.json
 ├── README.md
 ├── SPEC.md
 └── docs/
-    └── INSTALACION.md
+    ├── INSTALACION.md
+    └── PLAN_F2.md              # 🚧 F2 (v1.1)
 ```
 
 **Convención de nombres**:
 
-- Ficheros y clases en **español** (consistencia interna): `cliente_omie.py`, `Ranura`, `ModeloTarifa`.
-- `unique_id` de sensores con prefijo del dominio: `optimizador_bateria_omie_precio_actual`.
+- Ficheros y clases en **español** (consistencia interna): `cliente_omie.py`, `solarman_client.py`, `Ranura`, `ModeloTarifa`, `ClienteSolarman`, `MapaRegistros`, `CoordinadorTelemetria`.
+- `unique_id` de sensores con prefijo del dominio: `optimizador_bateria_omie_precio_actual`, `optimizador_bateria_omie_soc_bateria`.
 - `entity_id` derivado del `device_info`; en la instalación de referencia resulta `sensor.inversor_optimizador_bateria_omie_*`.
 
-**Ficheros futuros** (F2+): `solarman_client.py`, `registers.yaml`, `forecaster.py`, `planner.py`, `executor.py`, `services.yaml`, `translations/es.json`.
+**Ficheros futuros** (F3+): `forecaster.py`, `planner.py`, `executor.py`.
+
+**Paquetes nuevos F2**: `pysolarmanv5` (manifest, pre-autorizado por AGENTS.md), `PyYAML` (manifest, OK confirmado), `pytest-homeassistant-custom-component` + `pysolarmanv5` (venv de tests, OK confirmado).
 
 ---
 
@@ -773,29 +902,32 @@ optimizador-bateria-omie/
 
 - Inversor Deye SUN-6K-SG05LP1-EU-AM2-P.
 - Batería Docan 51,2 V 300 Ah (15,36 kWh).
-- Datalogger Solarman (serie 3178171873, IP 192.168.1.76).
+- Datalogger Solarman (serie 3178171873, IP 192.168.1.76, puerto 8899).
 - Tarifa 2.0TD con 5,75 kW contratados.
 - Remuneración de excedentes al mismo precio que la compra.
 - Fines de semana y festivos nacionales → **valle** todo el día (confirmado; coincide con tarifa 2.0TD estándar).
+- **F2**: `telemetry_source` por defecto `solarman_modbus` (entity_id de `ha_entities` quedan como campos vacíos con TODO).
 
 ### 12.2 Pendientes de confirmar
 
-1. **Entidad de clima** de HA a usar y lista de **festivos locales** (más allá de los nacionales ya incluidos en `FESTIVOS_ESPANA`).
-2. **Previsión de producción FV** (Solcast u otro) — opcional, mejora el plan.
-3. **`probe_registers`**: familia de registros A/B válida para la placa AM2 (bloquea F2/F4).
+1. **Entidad de clima** de HA a usar y lista de **festivos locales** (más allá de los nacionales ya incluidos en `FESTIVOS_ESPANA`) — F3.
+2. **Previsión de producción FV** (Solcast u otro) — opcional, mejora el plan — F3+.
+3. **`probe_registers`**: familia de registros A/B válida para la placa AM2 (verificación con hardware, por el usuario; bloquea F4).
+4. **Offsets exactos de la familia B** dentro de 4210–4233 (TODO en `registers.yaml`).
+5. **Endpoint de la API pública OMIE a 15 min**: condición para implementar la deuda #3 (opcional en F2).
 
 ### 12.3 Deuda técnica registrada
 
-| # | Elemento | Fase de resolución |
-|---|---|---|
-| 1 | `ConfiguracionOmie.dias_cache` se guarda pero **no se aplica**: no hay job de limpieza de caché vieja. Añadir tarea diaria que borre `cache/*.json` con `mtime > dias_cache * 86400`. | F2 |
-| 2 | **Reintentos con backoff** en `_obtener_desde_redata` (actualmente timeout por defecto de `aiohttp`). | F2 |
-| 3 | **Sustituir dependencia de la plantilla OMIE** por cliente directo contra `api.omie.es` (mantener la plantilla como acelerador opcional). | F2 |
-| 4 | **`OptionsFlow`** en `config_flow.py` para editar `fuente_prioritaria`, `usar_cache` y `dias_cache` sin borrar y recriar la entrada. | F3 |
-| 5 | **Mover parámetros de tarifa** (peajes, cargos, impuestos, potencia) a `entry.data` en lugar de estar hardcodeados en `tarifa.py`. | F4 |
-| 6 | **Carpeta `tests/`** con los ficheros descritos en §10.1, incluyendo el caso explícito de domingo/festivo todo `valle`. | Próxima iteración |
-| 7 | **Trazabilidad de ciclos**: el log actual dice `Datos actualizados. Fuente: X, tramos hoy: N`. Considerar añadir `tramos mañana: M` y `desviación` con `precios_hoy[0].fecha_hora_utc`. | F2 |
-| 8 | **Limpieza puntual de entidades duplicadas `_2`** tras el cambio de `unique_id` de 0.7.0 → 0.7.1. Acción manual documentada: borrar las 8 entidades `optimizador_bateria_omie_*` desde la UI y reiniciar HA para recrear las 4 con `entity_id` limpio. **No requiere cambio de código**; es una migración única. | Manual, una vez |
+| # | Elemento | Fase de resolución | Estado |
+|---|---|---|---|
+| 1 | `ConfiguracionOmie.dias_cache` se guarda pero **no se aplica**: no hay job de limpieza de caché vieja. Añadir tarea diaria (04:30) **y pasada en arranque** que borre `cache/*.json` con `mtime > dias_cache * 86400`. | F2 | 🚧 en resolución |
+| 2 | **Reintentos con backoff** en `_obtener_desde_redata`: `ClientTimeout(total=10)` explícito + 2 reintentos (0,5 s, 2 s). | F2 | 🚧 en resolución |
+| 3 | **Sustituir dependencia de la plantilla OMIE** por cliente directo contra `api.omie.es`. **Opcional y condicionado**: solo si existe endpoint a 15 min; el mercado horario **no se interpola** (prohibido inventar valores). Si no, queda TODO documentado. | F2 (opcional) | 🚧 condicionada |
+| 4 | **`OptionsFlow`** en `config_flow.py` para editar `fuente_prioritaria`, `usar_cache` y `dias_cache` sin borrar y recrear la entrada. (`async_step_reconfigure` llega en F2 — M6.) | F3 | pendiente |
+| 5 | **Mover parámetros de tarifa** (peajes, cargos, impuestos, potencia) a `entry.data` en lugar de estar hardcodeados en `tarifa.py`. | F4 | pendiente |
+| 6 | **Carpeta `tests/`** con los ficheros descritos en §10.1, incluyendo el caso explícito de domingo/festivo todo `valle`. | F2 (suite F1 ya en verde: 62 tests) | 🚧 en resolución |
+| 7 | **Trazabilidad de ciclos**: log de éxito `Datos actualizados. Fuente: X, tramos hoy: N, tramos mañana: M` (+ desviación). | F2 | 🚧 en resolución |
+| 8 | **Limpieza puntual de entidades duplicadas `_2`** tras el cambio de `unique_id` de 0.7.0 → 0.7.1. Acción manual documentada: borrar las 8 entidades `optimizador_bateria_omie_*` desde la UI y reiniciar HA. **No requiere cambio de código**; migración única. | Manual, una vez | pendiente (manual) |
 
 ---
 
@@ -808,5 +940,5 @@ optimizador-bateria-omie/
 - **Datasheet Deye SUN-6K-SG05LP1-EU** — 6.000 W, PV 7.800 W, carga/descarga 0–135 A en modelo 6 kW, batería 40–60 V.
 - **Docan Power LiFePO4 51,2 V 300 Ah** — corriente recomendada 140 A, máx. 200 A.
 - **Foros comunitarios de registros Modbus Deye** — varían por modelo y generación; validar siempre con `probe_registers` antes de operar.
-- **Home Assistant Developer Docs** — `DataUpdateCoordinator`, `CoordinatorEntity`, `SensorEntity`, `ConfigFlow`.
+- **Home Assistant Developer Docs** — `DataUpdateCoordinator`, `CoordinatorEntity`, `SensorEntity`, `ConfigFlow`, `hass.storage`, `SupportsResponse`.
 - **Tarifa 2.0TD (BOE)** — peajes y cargos vigentes; estructura de períodos punta/llano/valle; fines de semana y festivos nacionales = valle todo el día.

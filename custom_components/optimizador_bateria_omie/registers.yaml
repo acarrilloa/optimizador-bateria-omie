@@ -1,0 +1,38 @@
+# Mapa de registros del inversor Deye SUN-6K-SG05LP1-EU-AM2-P (vía datalogger Solarman).
+# Las direcciones viven SOLO en este fichero: prohibido hardcodearlas en código.
+# Override de usuario (sobrevive a actualizaciones de HACS):
+#   config/optimizador_bateria_omie/registers.yaml
+inverter: "deye-sun-6k-sg05lp1-am2"
+block_size: 16
+
+familias:
+  A:                                   # placas nuevas SG04LP3 / AM2 / HP3
+    probe:  { funcion: soc, addr: 588 }
+    plausibility:
+      soc:          [0, 100]
+      potencia_bat: [-7000, 7000]
+    telemetria:
+      soc:            { addr: 588, scale: 0.1, unit: "%" }
+      potencia_bat:   { addr: 590, scale: 1,   unit: "W", signed: true, invertir_signo: false, signo_semantico: "+descarga/-carga" }
+      corriente_bat:  { addr: 591, scale: 0.1, unit: "A", signed: true }
+      consumo_casa:   { addr: 670, scale: 0.1, unit: "W" }
+      produccion_fv:  { addr: 633, scale: 0.1, unit: "W" }
+    control:                           # reservado a F4; F2 no lo lee
+      corriente_carga: { addr: 128, min: 0, max: 135 }
+      carga_desde_red: { addr: 166 }
+      limite_carga:    { addr: 172, min: 10, max: 100 }
+      limite_descarga: { addr: 108, min: 10, max: 100 }
+
+  B:                                   # placas clásicas SG01/03LP1
+    probe:  { funcion: soc, addr: 4212 }  # TODO: confirmar offset exacto (bloque 4210-4233)
+    plausibility:
+      soc:          [0, 100]
+      potencia_bat: [-7000, 7000]
+    telemetria:
+      soc:            { addr: 4212, scale: 1,   unit: "%" }               # TODO
+      potencia_bat:   { addr: 4214, scale: 1,   unit: "W", signed: true, invertir_signo: false, signo_semantico: "+descarga/-carga" }  # TODO
+      consumo_casa:   { addr: 4226, scale: 0.1, unit: "W" }               # TODO
+      produccion_fv:  { addr: 4229, scale: 0.1, unit: "W" }               # TODO
+    control:
+      tou_habilitacion: { addr: 4310 }
+      tou_programas:    { addr: 4315, qty: 24 }

@@ -15,6 +15,30 @@
       }
     }
   },
+  "services": {
+    "probe_registers": {
+      "name": "Sondear registros",
+      "description": "Valida la familia de registros (A/B) del inversor comparando el SOC leído por Modbus con el que muestra la pantalla o la APP Solarman. Requiere exactamente una familia candidata (tolerancia ±2 % y plausibilidad).",
+      "fields": {
+        "expected": {
+          "name": "SOC esperado",
+          "description": "SOC % actual que muestra la pantalla o APP Solarman."
+        },
+        "register": {
+          "name": "Registro",
+          "description": "Dirección a leer (por defecto: probe.addr de cada familia)."
+        },
+        "familia": {
+          "name": "Familia",
+          "description": "Sondear solo esta familia (por defecto: ambas)."
+        },
+        "reset": {
+          "name": "Resetear",
+          "description": "Con true borra la validación y no sondea."
+        }
+      }
+    }
+  },
   "error": {
     "fuente_invalida": "Fuente de precios no válida",
     "error_desconocido": "Error desconocido durante la configuración"

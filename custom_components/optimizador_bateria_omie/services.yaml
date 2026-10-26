@@ -1,2 +1,31 @@
-# Servicios del componente Optimizador Batería OMIE
-# Placeholder para servicios futuros
+optimizador_bateria_omie.probe_registers:
+  fields:
+    expected:
+      description: "SOC % actual que muestra la pantalla o APP Solarman"
+      example: 73
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 100
+    register:
+      description: "Dirección a leer (por defecto: probe.addr de cada familia)"
+      example: 588
+      required: false
+      selector:
+        number:
+          min: 1
+          max: 9999
+    familia:
+      description: "Sondear solo esta familia (por defecto: ambas)"
+      required: false
+      selector:
+        select:
+          options:
+            - "A"
+            - "B"
+    reset:
+      description: "Con true borra la validación y NO sondea (se ignoran expected/register/familia)"
+      default: false
+      required: false
+      selector: boolean
