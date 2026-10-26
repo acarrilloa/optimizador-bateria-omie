@@ -1,5 +1,5 @@
 """Cliente para obtener precios de OMIE."""
-# versión 0.7.5
+# versión 0.8.1
 
 import json
 import logging

@@ -1,5 +1,5 @@
 """Custom component para optimizar el uso de baterías con precios OMIE."""
-# versión 0.8.0
+# versión 0.8.1
 
 import importlib
 import logging

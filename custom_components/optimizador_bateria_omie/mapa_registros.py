@@ -4,7 +4,7 @@ Las direcciones de registros viven SOLO en ``registers.yaml`` (empaquetado)
 o en su override de usuario ``config/optimizador_bateria_omie/registers.yaml``.
 Este módulo carga, valida y expone el mapa; nunca define direcciones.
 """
-# versión 0.8.0
+# versión 0.8.1
 
 import logging
 from pathlib import Path
