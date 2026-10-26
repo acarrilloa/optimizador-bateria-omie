@@ -1,6 +1,6 @@
 # Optimizador Batería OMIE
 
-![Versión](https://img.shields.io/badge/versión-0.8.1-blue)
+![Versión](https://img.shields.io/badge/versión-0.8.2-blue)
 ![F2](https://img.shields.io/badge/F2-telemetría%20Solarman-en%20desarrollo-orange)
 ![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2025.x-41BDF5)
 ![Python](https://img.shields.io/badge/Python-3.13+-3776AB)

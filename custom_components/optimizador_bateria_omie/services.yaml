@@ -1,4 +1,5 @@
-optimizador_bateria_omie.probe_registers:
+# versión 0.8.2
+probe_registers:
   fields:
     expected:
       description: "SOC % actual que muestra la pantalla o APP Solarman"
