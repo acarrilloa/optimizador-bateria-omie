@@ -86,14 +86,17 @@ class TestCarga:
         with pytest.raises(ErrorMapaRegistros, match="familias"):
             MapaRegistros(hass).cargar()
 
-    def test_todo_como_warning(self, hass, caplog):
-        """Los TODO del YAML empaquetado avisan, no rompen la carga."""
-        with caplog.at_level("WARNING"):
+    def test_todo_como_debug(self, hass, caplog):
+        """Los TODO del YAML empaquetado van a debug, no rompen la carga."""
+        with caplog.at_level("DEBUG"):
             mapa = MapaRegistros(hass)
             mapa.cargar()
 
         assert mapa.familias() == ["A", "B"]
         assert "TODO" in caplog.text
+        assert "TODO" not in [
+            r.message for r in caplog.records if r.levelname == "WARNING"
+        ]
 
     def test_override_usuario(self, hass, tmp_path):
         _escribir_override(

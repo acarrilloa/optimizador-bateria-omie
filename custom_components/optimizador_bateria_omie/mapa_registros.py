@@ -90,10 +90,15 @@ class MapaRegistros:
 
     @staticmethod
     def _avisar_todo(texto: str, ruta: Path) -> None:
-        """Los TODO en comentarios son avisos, no errores (AGENTS.md)."""
+        """Los TODO en comentarios son avisos, no errores (AGENTS.md).
+
+        Se registran a nivel ``debug`` para no generar advertencias en el
+        registro de HA por direcciones pendientes de confirmar de familias
+        que pueden no usarse; siguen documentados en ``registers.yaml``.
+        """
         for numero, linea in enumerate(texto.splitlines(), start=1):
             if "TODO" in linea:
-                _LOGGER.warning(
+                _LOGGER.debug(
                     "TODO pendiente en %s:%d: %s",
                     ruta, numero, linea.strip(),
                 )
