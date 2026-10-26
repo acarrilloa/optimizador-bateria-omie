@@ -96,12 +96,17 @@ class ClienteOmie:
             return []
 
         datos = state.attributes.get("precios")
-        if isinstance(datos, list) and datos:
-            if isinstance(datos[0], dict) and "start" in datos[0] and "price" in datos[0]:
-                _LOGGER.debug(
-                    "%s → %d intervalos", sensor_entity_id, len(datos),
-                )
-                return datos
+        if (
+            isinstance(datos, list)
+            and datos
+            and isinstance(datos[0], dict)
+            and "start" in datos[0]
+            and "price" in datos[0]
+        ):
+            _LOGGER.debug(
+                "%s → %d intervalos", sensor_entity_id, len(datos),
+            )
+            return datos
 
         _LOGGER.info("Sensor %s sin datos de precios", sensor_entity_id)
         return []

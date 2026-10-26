@@ -23,6 +23,18 @@ _LOGGER = logging.getLogger(__name__)
 PLATFORMS = ["sensor"]
 
 
+def _cargar_plataformas() -> None:
+    """Pre-importa los módulos de plataforma fuera del event loop.
+
+    ``async_forward_entry_setups`` importa los módulos de plataforma con
+    ``importlib.import_module``, que es una llamada bloqueante. Importándolos
+    aquí (mediante ``hass.async_add_executor_job``) se evita la advertencia
+    "Detected blocking call to import_module inside the event loop".
+    """
+    for plataforma in PLATFORMS:
+        importlib.import_module(f"{__name__}.{plataforma}")
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Configuración de la integración."""
     hass.data.setdefault(DOMAIN, {})

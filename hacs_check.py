@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Script para verificar la estructura del componente."""
 
-import os
 import sys
 from pathlib import Path
 
@@ -23,7 +22,7 @@ def check_file_content(file_path: Path, required_content: list[str]) -> bool:
             if required not in content:
                 return False
         return True
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 (script de diagnóstico: se reporta cualquier fallo)
         print(f"    Error: {e}")
         return False
 

@@ -80,7 +80,7 @@ def check_structure():
         print(f"❌ Error: Faltan archivos: {', '.join(missing)}")
         sys.exit(1)
     
-    print(f"✅ Estructura del componente verificada")
+    print("✅ Estructura del componente verificada")
 
 
 def install_component(config_dir: Path, force: bool = False):
@@ -89,7 +89,7 @@ def install_component(config_dir: Path, force: bool = False):
     
     if target_dir.exists():
         if force:
-            print(f"🗑️  Eliminando instalación existente...")
+            print("🗑️  Eliminando instalación existente...")
             shutil.rmtree(target_dir)
         else:
             print(f"⚠️  El componente ya está instalado en {target_dir}")
@@ -98,9 +98,9 @@ def install_component(config_dir: Path, force: bool = False):
     print(f"📦 Copiando {SOURCE_DIR} a {target_dir}...")
     shutil.copytree(SOURCE_DIR, target_dir)
     print(f"✅ Componente instalado en {target_dir}")
-    print(f"\n📝 Para activarlo:")
-    print(f"   1. Reinicie Home Assistant")
-    print(f"   2. Vaya a Configuración → Dispositivos y servicios → + Añadir integración")
+    print("\n📝 Para activarlo:")
+    print("   1. Reinicie Home Assistant")
+    print("   2. Vaya a Configuración → Dispositivos y servicios → + Añadir integración")
     print(f"   3. Busque '{COMPONENT_NAME}'")
 
 
@@ -114,7 +114,7 @@ def uninstall_component(config_dir: Path):
     
     print(f"🗑️  Eliminando {target_dir}...")
     shutil.rmtree(target_dir)
-    print(f"✅ Componente desinstalado")
+    print("✅ Componente desinstalado")
 
 
 def check_status(config_dir: Path):
@@ -122,7 +122,7 @@ def check_status(config_dir: Path):
     target_dir = config_dir / "custom_components" / COMPONENT_NAME
     
     if not target_dir.exists():
-        print(f"❌ Componente NO instalado")
+        print("❌ Componente NO instalado")
         return
     
     print(f"✅ Componente instalado en: {target_dir}")
@@ -137,7 +137,7 @@ def check_status(config_dir: Path):
     if missing:
         print(f"⚠️  Archivos faltantes: {', '.join(missing)}")
     else:
-        print(f"✅ Todos los archivos presentes")
+        print("✅ Todos los archivos presentes")
 
 
 def main():

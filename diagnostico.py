@@ -10,7 +10,7 @@ Uso:
 
 import asyncio
 import sys
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 # Añadir el directorio custom_components al path
@@ -72,12 +72,12 @@ async def test_omie_service():
         print(f"✅ Éxito: Obtenidas {len(ranuras)} ranuras")
         
         if ranuras:
-            print(f"\nPrimeras 5 ranuras:")
+            print("\nPrimeras 5 ranuras:")
             for i, ranura in enumerate(ranuras[:5]):
                 print(f"  {i}: {ranura.fecha_hora_utc.isoformat()} - {ranura.precio_eur_kwh}€/kWh (fuente: {ranura.fuente})")
         
         # Probar normalización
-        print(f"\nProbando normalización...")
+        print("\nProbando normalización...")
         datos_ejemplo = [
             {"start": f"{hoy.strftime('%Y-%m-%d')}T00:00:00+02:00", "end": f"{hoy.strftime('%Y-%m-%d')}T00:15:00+02:00", "price": 0.20831},
             {"start": f"{hoy.strftime('%Y-%m-%d')}T00:15:00+02:00", "end": f"{hoy.strftime('%Y-%m-%d')}T00:30:00+02:00", "price": 0.20731},
@@ -85,7 +85,7 @@ async def test_omie_service():
         ranuras_norm = cliente._normalizar_a_15min(datos_ejemplo, hoy)
         print(f"✅ Normalización: {len(ranuras_norm)} ranuras")
         
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 (script de diagnóstico: se reporta cualquier fallo)
         print(f"❌ Error: {e}")
         import traceback
         traceback.print_exc()
@@ -97,7 +97,7 @@ async def test_timezone_conversion():
     print("PRUEBA: Conversión de Timezone")
     print("=" * 60)
     
-    from datetime import timezone, timedelta
+    from datetime import timedelta
     
     # Simular el formato del servicio OMIE
     start_str = "2026-10-06T00:00:00+02:00"
@@ -109,14 +109,14 @@ async def test_timezone_conversion():
     
     # Convertir a UTC
     if start_dt.tzinfo is None:
-        start_utc = start_dt.replace(tzinfo=timezone.utc)
+        start_utc = start_dt.replace(tzinfo=UTC)
     else:
-        start_utc = start_dt.astimezone(timezone.utc)
+        start_utc = start_dt.astimezone(UTC)
     
     print(f"En UTC: {start_utc.isoformat()}")
     
     # Obtener hora actual en UTC
-    ahora_utc = datetime.now(tz=timezone.utc)
+    ahora_utc = datetime.now(tz=UTC)
     print(f"Ahora UTC: {ahora_utc.isoformat()}")
     
     # Comparar
