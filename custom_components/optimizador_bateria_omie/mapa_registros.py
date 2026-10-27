@@ -4,7 +4,7 @@ Las direcciones de registros viven SOLO en ``registers.yaml`` (empaquetado)
 o en su override de usuario ``config/optimizador_bateria_omie/registers.yaml``.
 Este módulo carga, valida y expone el mapa; nunca define direcciones.
 """
-# versión 0.8.1
+# versión 0.8.5
 
 import logging
 from pathlib import Path
@@ -181,6 +181,8 @@ class MapaRegistros:
         params.setdefault("unit", "")
         params.setdefault("signed", False)
         params.setdefault("invertir_signo", False)
+        # Aseguramos que offset siempre exista (por defecto 0)
+        params.setdefault("offset", 0)
         return params
 
     def direccion(self, familia: str, funcion: str, tipo: str = "telemetria") -> int:
@@ -215,6 +217,7 @@ class MapaRegistros:
         valor: int | float = crudo
         if params.get("signed"):
             valor = cls.complemento_a_dos(int(valor))
+        valor = valor - float(params.get("offset", 0))
         valor = valor * float(params.get("scale", 1))
         if params.get("invertir_signo"):
             valor = -valor

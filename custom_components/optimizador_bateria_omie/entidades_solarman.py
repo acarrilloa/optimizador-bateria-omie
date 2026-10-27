@@ -1,5 +1,5 @@
 """Entidades de telemetría Solarman (F2)."""
-# versión 0.8.0
+# versión 0.8.5
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -195,3 +195,29 @@ class SensorFamiliaValidada(SensorEntity):
     def _actualizar(self) -> None:
         """Repinta el estado al cambiar la validación."""
         self.async_write_ha_state()
+
+class SensorTemperaturaInversor(SensorBase):
+    _attr_unique_id = "optimizador_bateria_omie_temperatura_inversor"
+    _attr_name = "Temperatura Inversor"
+    _attr_native_unit_of_measurement = "°C"
+    _attr_device_class = SensorDeviceClass.TEMPERATURE
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    @property
+    def native_value(self) -> float | None:
+        if self.coordinator.data:
+            return round(self.coordinator.data.temperatura_inversor, 1)
+        return None
+
+class SensorTemperaturaBateria(SensorBase):
+    _attr_unique_id = "optimizador_bateria_omie_temperatura_bateria"
+    _attr_name = "Temperatura Batería"
+    _attr_native_unit_of_measurement = "°C"
+    _attr_device_class = SensorDeviceClass.TEMPERATURE
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    @property
+    def native_value(self) -> float | None:
+        if self.coordinator.data:
+            return round(self.coordinator.data.temperatura_bateria, 1)
+        return None

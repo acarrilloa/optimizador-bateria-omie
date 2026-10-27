@@ -1,5 +1,5 @@
 """Plataforma de sensores para la integración Optimizador Batería OMIE."""
-# versión 0.8.0
+# versión 0.8.5
 
 import logging
 
@@ -39,6 +39,8 @@ from custom_components.optimizador_bateria_omie.entidades_solarman import (
     SensorPotenciaBateria,
     SensorProduccionFv,
     SensorSocBateria,
+    SensorTemperaturaInversor,
+    SensorTemperaturaBateria,    
 )
 from custom_components.optimizador_bateria_omie.solarman_client import (
     ClienteSolarman,
@@ -108,6 +110,8 @@ async def async_setup_entry(
         SensorCorrienteBateria(coordinador_telemetria),
         SensorConsumoCasa(coordinador_telemetria),
         SensorProduccionFv(coordinador_telemetria),
+        SensorTemperaturaInversor(coordinador_telemetria),
+        SensorTemperaturaBateria(coordinador_telemetria),
     ])
 
     async_add_entities(entidades)

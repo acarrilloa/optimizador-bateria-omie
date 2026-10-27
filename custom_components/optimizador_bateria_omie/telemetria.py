@@ -1,5 +1,5 @@
 """Telemetría del inversor: dataclass, Store de validación y coordinador."""
-# versión 0.8.0
+# versión 0.8.5
 
 import logging
 from dataclasses import dataclass
@@ -48,6 +48,8 @@ class TelemetriaInversor:
     corriente_bateria: float | None
     consumo_casa: float | None
     produccion_fv: float | None
+    temperatura_inversor: float | None
+    temperatura_bateria: float | None
     ts_actualizacion: datetime
 
 
@@ -210,5 +212,7 @@ class CoordinadorTelemetria(DataUpdateCoordinator[TelemetriaInversor]):
             corriente_bateria=None,
             consumo_casa=_valor(CONF_ENTITY_ID_CONSUMO),
             produccion_fv=_valor(CONF_ENTITY_ID_FV),
+            temperatura_inversor=None,
+            temperatura_bateria=None, 
             ts_actualizacion=datetime.now(tz=UTC),
         )

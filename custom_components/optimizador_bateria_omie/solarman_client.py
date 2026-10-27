@@ -1,5 +1,5 @@
 """Cliente Modbus del datalogger Solarman (solo lectura en F2)."""
-# versión 0.8.0
+# versión 0.8.5
 
 import asyncio
 import logging
@@ -27,6 +27,8 @@ FUNCIONES_TELEMETRIA = (
     "corriente_bat",
     "consumo_casa",
     "produccion_fv",
+    "temperatura_inversor",
+    "temperatura_bateria",
 )
 
 
@@ -179,5 +181,7 @@ class ClienteSolarman:
             corriente_bateria=valores.get("corriente_bat"),
             consumo_casa=valores.get("consumo_casa"),
             produccion_fv=valores.get("produccion_fv"),
+            temperatura_inversor=valores.get("temperatura_inversor"),
+            temperatura_bateria=valores.get("temperatura_bateria"),
             ts_actualizacion=datetime.now(tz=UTC),
         )
