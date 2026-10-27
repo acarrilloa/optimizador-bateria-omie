@@ -12,6 +12,8 @@ from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity import DeviceInfo, EntityCategory
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
+from custom_components.optimizador_bateria_omie.entidades import SensorBase
+
 from custom_components.optimizador_bateria_omie.const import (
     DOMAIN,
     SENSOR_CONSUMO_CASA,
