@@ -12,8 +12,6 @@ from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity import DeviceInfo, EntityCategory
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from custom_components.optimizador_bateria_omie.entidades import SensorBase
-
 from custom_components.optimizador_bateria_omie.const import (
     DOMAIN,
     SENSOR_CONSUMO_CASA,
@@ -198,7 +196,8 @@ class SensorFamiliaValidada(SensorEntity):
         """Repinta el estado al cambiar la validación."""
         self.async_write_ha_state()
 
-class SensorTemperaturaInversor(SensorBase):
+class SensorTemperaturaInversor(SensorTelemetriaBase):
+    """Sensor para la temperatura del disipador del inversor."""
     _attr_unique_id = "optimizador_bateria_omie_temperatura_inversor"
     _attr_name = "Temperatura Inversor"
     _attr_native_unit_of_measurement = "°C"
@@ -211,7 +210,8 @@ class SensorTemperaturaInversor(SensorBase):
             return round(self.coordinator.data.temperatura_inversor, 1)
         return None
 
-class SensorTemperaturaBateria(SensorBase):
+class SensorTemperaturaBateria(SensorTelemetriaBase):
+    """Sensor para la temperatura de la batería."""
     _attr_unique_id = "optimizador_bateria_omie_temperatura_bateria"
     _attr_name = "Temperatura Batería"
     _attr_native_unit_of_measurement = "°C"
