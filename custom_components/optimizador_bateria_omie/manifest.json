@@ -6,7 +6,7 @@
   "dependencies": ["omie"],
   "codeowners": ["@acarrilloa"],
   "config_flow": true,
-  "version": "0.8.3",
+  "version": "0.8.4",
   "homeassistant": "2026.10.1",
   "issue_tracker": "https://github.com/acarrilloa/optimizador-bateria-omie/issues",
   "license": "MIT",

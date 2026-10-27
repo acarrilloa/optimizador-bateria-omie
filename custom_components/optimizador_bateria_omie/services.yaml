@@ -1,5 +1,5 @@
-# versión 0.8.3
-optimizador_bateria_omie.probe_registers:
+# versión 0.8.4
+probe_registers:
   fields:
     expected:
       name: "SOC esperado"
