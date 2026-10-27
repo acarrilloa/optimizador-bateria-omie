@@ -1,5 +1,5 @@
 """Entidades de telemetría Solarman (F2)."""
-# versión 0.8.5
+# versión 0.8.6
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
