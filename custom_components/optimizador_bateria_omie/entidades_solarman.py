@@ -1,5 +1,5 @@
 """Entidades de telemetría Solarman (F2)."""
-# versión 0.8.6
+# versión 0.8.7
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -29,7 +29,7 @@ from custom_components.optimizador_bateria_omie.telemetria import (
 
 class SensorTelemetriaBase(CoordinatorEntity, SensorEntity):
     """Base de los sensores de telemetría del inversor.
-
+    
     Todos comparten el ``device_info`` de F1 y quedan ``unavailable``
     cuando la magnitud es ``None`` (nunca se inventan valores).
     """
@@ -65,16 +65,12 @@ class SensorSocBateria(SensorTelemetriaBase):
 
     @property
     def native_value(self) -> float | None:
-        """SOC actual leído del inversor."""
         datos = self.coordinator.data
         return datos.soc if datos is not None else None
 
 
 class SensorPotenciaBateria(SensorTelemetriaBase):
-    """Potencia de la batería (W).
-
-    Convención Deye (D16): **+descarga / −carga**.
-    """
+    """Potencia de la batería (W). Convención Deye: +descarga / −carga."""
 
     _attr_unique_id = SENSOR_POTENCIA_BATERIA
     _attr_name = "Potencia batería"
@@ -84,16 +80,12 @@ class SensorPotenciaBateria(SensorTelemetriaBase):
 
     @property
     def native_value(self) -> float | None:
-        """Potencia instantánea (+descarga / −carga)."""
         datos = self.coordinator.data
         return datos.potencia_bateria if datos is not None else None
 
 
 class SensorCorrienteBateria(SensorTelemetriaBase):
-    """Corriente de la batería (A).
-
-    Mismo criterio de signo que la potencia (+descarga / −carga).
-    """
+    """Corriente de la batería (A)."""
 
     _attr_unique_id = SENSOR_CORRIENTE_BATERIA
     _attr_name = "Corriente batería"
@@ -103,7 +95,6 @@ class SensorCorrienteBateria(SensorTelemetriaBase):
 
     @property
     def native_value(self) -> float | None:
-        """Corriente instantánea (+descarga / −carga)."""
         datos = self.coordinator.data
         return datos.corriente_bateria if datos is not None else None
 
@@ -119,7 +110,6 @@ class SensorConsumoCasa(SensorTelemetriaBase):
 
     @property
     def native_value(self) -> float | None:
-        """Consumo instantáneo."""
         datos = self.coordinator.data
         return datos.consumo_casa if datos is not None else None
 
@@ -135,18 +125,42 @@ class SensorProduccionFv(SensorTelemetriaBase):
 
     @property
     def native_value(self) -> float | None:
-        """Producción FV instantánea."""
         datos = self.coordinator.data
         return datos.produccion_fv if datos is not None else None
 
 
-class SensorFamiliaValidada(SensorEntity):
-    """Sensor diagnóstico: familia de registros validada.
+class SensorTemperaturaInversor(SensorTelemetriaBase):
+    """Temperatura del disipador del inversor."""
 
-    Estado: ``"ninguna"`` / ``"A"`` / ``"B"`` (leído del Store de
-    validación). Se repinta al recibir la señal del servicio
-    ``probe_registers`` o al arrancar.
-    """
+    _attr_unique_id = "optimizador_bateria_omie_temperatura_inversor"
+    _attr_name = "Temperatura Inversor"
+    _attr_native_unit_of_measurement = "°C"
+    _attr_device_class = SensorDeviceClass.TEMPERATURE
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    @property
+    def native_value(self) -> float | None:
+        datos = self.coordinator.data
+        return round(datos.temperatura_inversor, 1) if datos and datos.temperatura_inversor is not None else None
+
+
+class SensorTemperaturaBateria(SensorTelemetriaBase):
+    """Temperatura de la batería."""
+
+    _attr_unique_id = "optimizador_bateria_omie_temperatura_bateria"
+    _attr_name = "Temperatura Batería"
+    _attr_native_unit_of_measurement = "°C"
+    _attr_device_class = SensorDeviceClass.TEMPERATURE
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    @property
+    def native_value(self) -> float | None:
+        datos = self.coordinator.data
+        return round(datos.temperatura_bateria, 1) if datos and datos.temperatura_bateria is not None else None
+
+
+class SensorFamiliaValidada(SensorEntity):
+    """Sensor diagnóstico: familia de registros validada."""
 
     _attr_has_entity_name = True
     _attr_unique_id = SENSOR_FAMILIA_VALIDADA
@@ -155,12 +169,10 @@ class SensorFamiliaValidada(SensorEntity):
     _attr_icon = "mdi:shield-check"
 
     def __init__(self, gestor: GestorValidacion) -> None:
-        """Inicializa el sensor con el gestor de validación."""
         self._gestor = gestor
 
     @property
     def device_info(self) -> DeviceInfo:
-        """Mismo dispositivo que los sensores de precios de F1."""
         return DeviceInfo(
             identifiers={(DOMAIN, "optimizador_bateria_omie")},
             name="Optimizador Batería OMIE",
@@ -170,12 +182,10 @@ class SensorFamiliaValidada(SensorEntity):
 
     @property
     def native_value(self) -> str:
-        """Familia validada o "ninguna"."""
         return self._gestor.familia or "ninguna"
 
     @property
     def extra_state_attributes(self) -> dict:
-        """Atributos de la última validación (del Store)."""
         estado = self._gestor.estado or {}
         return {
             "probe_addr": estado.get("probe_addr"),
@@ -184,7 +194,6 @@ class SensorFamiliaValidada(SensorEntity):
         }
 
     async def async_added_to_hass(self) -> None:
-        """Se suscribe a los cambios del estado de validación."""
         self.async_on_remove(
             async_dispatcher_connect(
                 self.hass, SIGNAL_VALIDACION_CAMBIADA, self._actualizar
@@ -193,33 +202,4 @@ class SensorFamiliaValidada(SensorEntity):
 
     @callback
     def _actualizar(self) -> None:
-        """Repinta el estado al cambiar la validación."""
         self.async_write_ha_state()
-
-class SensorTemperaturaInversor(SensorTelemetriaBase):
-    """Sensor para la temperatura del disipador del inversor."""
-    _attr_unique_id = "optimizador_bateria_omie_temperatura_inversor"
-    _attr_name = "Temperatura Inversor"
-    _attr_native_unit_of_measurement = "°C"
-    _attr_device_class = SensorDeviceClass.TEMPERATURE
-    _attr_state_class = SensorStateClass.MEASUREMENT
-
-    @property
-    def native_value(self) -> float | None:
-        if self.coordinator.data:
-            return round(self.coordinator.data.temperatura_inversor, 1)
-        return None
-
-class SensorTemperaturaBateria(SensorTelemetriaBase):
-    """Sensor para la temperatura de la batería."""
-    _attr_unique_id = "optimizador_bateria_omie_temperatura_bateria"
-    _attr_name = "Temperatura Batería"
-    _attr_native_unit_of_measurement = "°C"
-    _attr_device_class = SensorDeviceClass.TEMPERATURE
-    _attr_state_class = SensorStateClass.MEASUREMENT
-
-    @property
-    def native_value(self) -> float | None:
-        if self.coordinator.data:
-            return round(self.coordinator.data.temperatura_bateria, 1)
-        return None
