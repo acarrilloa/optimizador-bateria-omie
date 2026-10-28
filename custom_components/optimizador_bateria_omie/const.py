@@ -1,5 +1,5 @@
 """Constantes para el componente Optimizador Batería OMIE."""
-# versión 0.8.0
+# versión 0.8.8
 
 DOMAIN = "optimizador_bateria_omie"
 
@@ -17,10 +17,13 @@ CONF_PUERTO = "puerto"
 CONF_SERIE = "serie"
 CONF_TELEMETRY_SOURCE = "telemetry_source"
 CONF_INTERVALO_TELEMETRIA = "intervalo_telemetria_s"
-CONF_ENTITY_ID_SOC = "entity_id_soc"
-CONF_ENTITY_ID_PBAT = "entity_id_pbat"
-CONF_ENTITY_ID_CONSUMO = "entity_id_consumo"
-CONF_ENTITY_ID_FV = "entity_id_fv"
+# Configuración de entidades externas (telemetry_source: ha_entities)
+CONF_ENTITY_ID_SOC_BATERIA = "entity_id_soc_bateria"
+CONF_ENTITY_ID_POTENCIA_BATERIA = "entity_id_potencia_bateria"
+CONF_ENTITY_ID_CONSUMO_CASA = "entity_id_consumo_casa"
+CONF_ENTITY_ID_PRODUCCION_FV = "entity_id_produccion_fv"
+CONF_ENTITY_ID_TEMP_INVERSOR = "entity_id_temp_inversor"
+CONF_ENTITY_ID_TEMP_BATERIA = "entity_id_temp_bateria"
 
 TELEMETRY_SOURCE_MODBUS = "solarman_modbus"
 TELEMETRY_SOURCE_HA = "ha_entities"

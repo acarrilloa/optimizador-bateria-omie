@@ -1,5 +1,5 @@
 """Telemetría del inversor: dataclass, Store de validación y coordinador."""
-# versión 0.8.5
+# versión 0.8.8
 
 import logging
 from dataclasses import dataclass
@@ -14,10 +14,12 @@ from homeassistant.helpers.update_coordinator import (
 )
 
 from custom_components.optimizador_bateria_omie.const import (
-    CONF_ENTITY_ID_CONSUMO,
-    CONF_ENTITY_ID_FV,
-    CONF_ENTITY_ID_PBAT,
-    CONF_ENTITY_ID_SOC,
+    CONF_ENTITY_ID_SOC_BATERIA,
+    CONF_ENTITY_ID_POTENCIA_BATERIA,
+    CONF_ENTITY_ID_CONSUMO_CASA,
+    CONF_ENTITY_ID_PRODUCCION_FV,
+    CONF_ENTITY_ID_TEMP_INVERSOR,
+    CONF_ENTITY_ID_TEMP_BATERIA,
     CONF_INTERVALO_TELEMETRIA,
     CONF_TELEMETRY_SOURCE,
     SIGNAL_VALIDACION_CAMBIADA,
@@ -188,31 +190,24 @@ class CoordinadorTelemetria(DataUpdateCoordinator[TelemetriaInversor]):
         def _valor(clave: str) -> float | None:
             entity_id = self.config_entry.data.get(clave)
             if not entity_id:
-                _LOGGER.warning(
-                    "Sin entity_id configurado para '%s'; magnitud None",
-                    clave,
-                )
+                _LOGGER.debug("Sin entity_id configurado para '%s'", clave)
                 return None
             estado = self.hass.states.get(entity_id)
-            if estado is None:
-                _LOGGER.warning("Entidad %s no encontrada", entity_id)
+            if estado is None or estado.state in ("unknown", "unavailable"):
                 return None
             try:
                 return float(estado.state)
             except (TypeError, ValueError):
-                _LOGGER.warning(
-                    "Estado no numérico en %s: %r", entity_id, estado.state
-                )
+                _LOGGER.warning("Estado no numérico en %s: %r", entity_id, estado.state)
                 return None
 
         return TelemetriaInversor(
-            soc=_valor(CONF_ENTITY_ID_SOC),
-            potencia_bateria=_valor(CONF_ENTITY_ID_PBAT),
-            # Sin fuente HA para la corriente en F2 → None (no inventada)
+            soc=_valor(CONF_ENTITY_ID_SOC_BATERIA),
+            potencia_bateria=_valor(CONF_ENTITY_ID_POTENCIA_BATERIA),
             corriente_bateria=None,
-            consumo_casa=_valor(CONF_ENTITY_ID_CONSUMO),
-            produccion_fv=_valor(CONF_ENTITY_ID_FV),
-            temperatura_inversor=None,
-            temperatura_bateria=None, 
+            consumo_casa=_valor(CONF_ENTITY_ID_CONSUMO_CASA),
+            produccion_fv=_valor(CONF_ENTITY_ID_PRODUCCION_FV),
+            temperatura_inversor=_valor(CONF_ENTITY_ID_TEMP_INVERSOR),
+            temperatura_bateria=_valor(CONF_ENTITY_ID_TEMP_BATERIA),
             ts_actualizacion=datetime.now(tz=UTC),
         )

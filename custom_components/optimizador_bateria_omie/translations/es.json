@@ -1,3 +1,4 @@
+# versión 0.8.8
 {
   "title": "Optimizador Batería OMIE",
   "description": "Componente para optimizar carga/descarga de batería usando precios OMIE con resolución de 15 minutos",
@@ -5,14 +6,47 @@
     "step": {
       "user": {
         "title": "Configuración inicial",
-        "description": "Configura la fuente de precios y parámetros de tarifa"
+        "description": "Configura la fuente de precios, la tarifa y la telemetría del inversor.",
+        "data": {
+          "fuente_prioritaria": "Fuente prioritaria",
+          "usar_cache": "Usar caché en disco",
+          "dias_cache": "Días de caché",
+          "telemetry_source": "Fuente de telemetría",
+          "ip": "Dirección IP del datalogger",
+          "puerto": "Puerto Modbus",
+          "serie": "Número de serie del datalogger",
+          "intervalo_telemetria_s": "Intervalo de actualización (segundos)",
+          "entity_id_soc_bateria": "Entidad SOC Batería",
+          "entity_id_potencia_bateria": "Entidad Potencia Batería (W)",
+          "entity_id_consumo_casa": "Entidad Consumo Casa (W)",
+          "entity_id_produccion_fv": "Entidad Producción FV (W)",
+          "entity_id_temp_inversor": "Entidad Temperatura Inversor (°C)",
+          "entity_id_temp_bateria": "Entidad Temperatura Batería (°C)"
+        }
+      },
+      "reconfigure": {
+        "title": "Reconfigurar Optimizador Batería OMIE",
+        "description": "Edita los parámetros de configuración.",
+        "data": {
+          "fuente_prioritaria": "Fuente prioritaria",
+          "usar_cache": "Usar caché en disco",
+          "dias_cache": "Días de caché",
+          "telemetry_source": "Fuente de telemetría",
+          "ip": "Dirección IP del datalogger",
+          "puerto": "Puerto Modbus",
+          "serie": "Número de serie del datalogger",
+          "intervalo_telemetria_s": "Intervalo de actualización (segundos)",
+          "entity_id_soc_bateria": "Entidad SOC Batería",
+          "entity_id_potencia_bateria": "Entidad Potencia Batería (W)",
+          "entity_id_consumo_casa": "Entidad Consumo Casa (W)",
+          "entity_id_produccion_fv": "Entidad Producción FV (W)",
+          "entity_id_temp_inversor": "Entidad Temperatura Inversor (°C)",
+          "entity_id_temp_bateria": "Entidad Temperatura Batería (°C)"
+        }
       }
     },
-    "options": {
-      "init": {
-        "title": "Opciones de configuración",
-        "description": "Ajusta parámetros de precios y tarifa"
-      }
+    "abort": {
+      "already_configured": "La integración ya está configurada."
     }
   },
   "services": {
@@ -46,6 +80,8 @@
   "select": {
     "omie": "Integración OMIE",
     "redata": "REData (Red Eléctrica)",
-    "esios": "ESIOS"
+    "esios": "ESIOS",
+    "solarman_modbus": "Modbus directo (Solarman)",
+    "ha_entities": "Entidades de Home Assistant (Solarman)"
   }
 }

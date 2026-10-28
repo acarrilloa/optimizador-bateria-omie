@@ -1,15 +1,46 @@
 # Fichero para que el formulario de configuración de la integración esté en español y sea legible
-# versión 0.7.0
+# versión 0.8.8
 {
   "config": {
     "step": {
       "user": {
         "title": "Configurar Optimizador Batería OMIE",
-        "description": "Selecciona la fuente de precios y el uso de caché.",
+        "description": "Configura la fuente de precios, la tarifa y la telemetría.",
         "data": {
           "fuente_prioritaria": "Fuente prioritaria",
           "usar_cache": "Usar caché en disco",
-          "dias_cache": "Días de caché"
+          "dias_cache": "Días de caché",
+          "telemetry_source": "Fuente de telemetría",
+          "ip": "Dirección IP",
+          "puerto": "Puerto",
+          "serie": "Número de serie",
+          "intervalo_telemetria_s": "Intervalo de actualización (s)",
+          "entity_id_soc_bateria": "Entidad SOC Batería",
+          "entity_id_potencia_bateria": "Entidad Potencia Batería",
+          "entity_id_consumo_casa": "Entidad Consumo Casa",
+          "entity_id_produccion_fv": "Entidad Producción FV",
+          "entity_id_temp_inversor": "Entidad Temperatura Inversor",
+          "entity_id_temp_bateria": "Entidad Temperatura Batería"
+        }
+      },
+      "reconfigure": {
+        "title": "Reconfigurar",
+        "description": "Edita los parámetros.",
+        "data": {
+          "fuente_prioritaria": "Fuente prioritaria",
+          "usar_cache": "Usar caché en disco",
+          "dias_cache": "Días de caché",
+          "telemetry_source": "Fuente de telemetría",
+          "ip": "Dirección IP",
+          "puerto": "Puerto",
+          "serie": "Número de serie",
+          "intervalo_telemetria_s": "Intervalo de actualización (s)",
+          "entity_id_soc_bateria": "Entidad SOC Batería",
+          "entity_id_potencia_bateria": "Entidad Potencia Batería",
+          "entity_id_consumo_casa": "Entidad Consumo Casa",
+          "entity_id_produccion_fv": "Entidad Producción FV",
+          "entity_id_temp_inversor": "Entidad Temperatura Inversor",
+          "entity_id_temp_bateria": "Entidad Temperatura Batería"
         }
       }
     },
