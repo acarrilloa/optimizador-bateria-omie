@@ -1,5 +1,5 @@
 """Telemetría del inversor: dataclass, Store de validación y coordinador."""
-# versión 0.8.8
+# versión 0.9.1
 
 import logging
 from dataclasses import dataclass
@@ -15,6 +15,7 @@ from homeassistant.helpers.update_coordinator import (
 
 from custom_components.optimizador_bateria_omie.const import (
     CONF_ENTITY_ID_CONSUMO_CASA,
+    CONF_ENTITY_ID_CORRIENTE_BATERIA,
     CONF_ENTITY_ID_POTENCIA_BATERIA,
     CONF_ENTITY_ID_PRODUCCION_FV,
     CONF_ENTITY_ID_SOC_BATERIA,
@@ -22,6 +23,7 @@ from custom_components.optimizador_bateria_omie.const import (
     CONF_ENTITY_ID_TEMP_INVERSOR,
     CONF_INTERVALO_TELEMETRIA,
     CONF_TELEMETRY_SOURCE,
+    DEFAULT_ENTITY_ID_CORRIENTE_BATERIA,
     SIGNAL_VALIDACION_CAMBIADA,
     STORE_KEY_PROBE,
     TELEMETRY_SOURCE_MODBUS,
@@ -187,8 +189,8 @@ class CoordinadorTelemetria(DataUpdateCoordinator[TelemetriaInversor]):
         ``None``; nunca se inventan valores.
         """
 
-        def _valor(clave: str) -> float | None:
-            entity_id = self.config_entry.data.get(clave)
+        def _valor(clave: str, default: str = "") -> float | None:
+            entity_id = self.config_entry.data.get(clave, default)
             if not entity_id:
                 _LOGGER.debug("Sin entity_id configurado para '%s'", clave)
                 return None
@@ -204,7 +206,10 @@ class CoordinadorTelemetria(DataUpdateCoordinator[TelemetriaInversor]):
         return TelemetriaInversor(
             soc=_valor(CONF_ENTITY_ID_SOC_BATERIA),
             potencia_bateria=_valor(CONF_ENTITY_ID_POTENCIA_BATERIA),
-            corriente_bateria=None,
+            corriente_bateria=_valor(
+                CONF_ENTITY_ID_CORRIENTE_BATERIA,
+                DEFAULT_ENTITY_ID_CORRIENTE_BATERIA,
+            ),
             consumo_casa=_valor(CONF_ENTITY_ID_CONSUMO_CASA),
             produccion_fv=_valor(CONF_ENTITY_ID_PRODUCCION_FV),
             temperatura_inversor=_valor(CONF_ENTITY_ID_TEMP_INVERSOR),

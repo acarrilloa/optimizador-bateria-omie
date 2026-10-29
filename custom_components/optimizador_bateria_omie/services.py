@@ -1,4 +1,4 @@
-"""Servicios de la integración (F2: probe_registers)."""
+"""Servicios de la integración (F2: probe_registers; F3: regenerate_plan)."""
 # versión 0.9.0
 
 import logging

@@ -708,7 +708,7 @@ optimizador-bateria-omie/
 | 7 | Log de ciclos con `tramos mañana` | F2 | ✅ **resuelta** |
 | 8 | Limpieza manual de entidades `_2` | Manual | pendiente (usuario) |
 | 9 | **Activar `solarman_modbus` cuando haya gateway RS485** | **F4** | 🚧 bloqueada por hardware |
-| 10 | **Publicar `corriente_bateria` en `ha_entities`** | ~~F3~~ | ⏸️ **aplazada** (decisión M2 del PLAN_F3): el usuario no ha confirmado una entidad fiable en Solarman; no bloquea nada |
+| 10 | **Publicar `corriente_bateria` en `ha_entities`** | F3 | ✅ **resuelta** — el usuario confirmó `sensor.inversor_battery_current` (−carga / +descarga); editable por `reconfigure` (`entity_id_corriente_bateria`) y usado como default |
 
 ---
 

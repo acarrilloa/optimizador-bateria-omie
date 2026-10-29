@@ -66,6 +66,10 @@ class TestSchemaF3:
         assert datos["potencia_contratada"] == 5750.0
         assert datos["eficiencia_round_trip"] == 88
         assert datos["capacidad_bateria_kwh"] == 15.36
+        # Deuda #10: corriente de batería con default confirmado
+        assert datos["entity_id_corriente_bateria"] == (
+            "sensor.inversor_battery_current"
+        )
 
     def test_rangos_validados(self):
         """Fuera de rango → Invalid."""

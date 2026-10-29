@@ -7,6 +7,7 @@ import pytest
 
 from custom_components.optimizador_bateria_omie.const import (
     CONF_ENTITY_ID_CONSUMO_CASA,
+    CONF_ENTITY_ID_CORRIENTE_BATERIA,
     CONF_ENTITY_ID_POTENCIA_BATERIA,
     CONF_ENTITY_ID_PRODUCCION_FV,
     CONF_ENTITY_ID_SOC_BATERIA,
@@ -212,6 +213,7 @@ class TestCoordinadorTelemetria:
             side_effect=lambda entity_id: {
                 "sensor.soc": _estado("sensor.soc", "73.5"),
                 "sensor.pbat": _estado("sensor.pbat", "-1200"),
+                "sensor.corriente": _estado("sensor.corriente", "-24.0"),
                 "sensor.consumo": _estado("sensor.consumo", "350"),
                 "sensor.fv": _estado("sensor.fv", "800"),
             }.get(entity_id)
@@ -221,6 +223,7 @@ class TestCoordinadorTelemetria:
                 CONF_TELEMETRY_SOURCE: TELEMETRY_SOURCE_HA_ENTITIES,
                 CONF_ENTITY_ID_SOC_BATERIA: "sensor.soc",
                 CONF_ENTITY_ID_POTENCIA_BATERIA: "sensor.pbat",
+                CONF_ENTITY_ID_CORRIENTE_BATERIA: "sensor.corriente",
                 CONF_ENTITY_ID_CONSUMO_CASA: "sensor.consumo",
                 CONF_ENTITY_ID_PRODUCCION_FV: "sensor.fv",
             }
@@ -231,9 +234,35 @@ class TestCoordinadorTelemetria:
 
         assert telemetria.soc == pytest.approx(73.5)
         assert telemetria.potencia_bateria == pytest.approx(-1200.0)
+        # Convención Deye: corriente −carga / +descarga
+        assert telemetria.corriente_bateria == pytest.approx(-24.0)
         assert telemetria.consumo_casa == pytest.approx(350.0)
         assert telemetria.produccion_fv == pytest.approx(800.0)
-        assert telemetria.corriente_bateria is None
+
+    @pytest.mark.asyncio
+    async def test_corriente_por_defecto_si_falta_clave(self, hass):
+        """Deuda #10: sin clave en entry.data se usa el entity_id por
+        defecto ``sensor.inversor_battery_current`` confirmado."""
+        gestor = GestorValidacion(hass, store=StoreFake())
+        hass.states.get = MagicMock(
+            side_effect=lambda entity_id: {
+                "sensor.soc": _estado("sensor.soc", "73.5"),
+                "sensor.inversor_battery_current": _estado(
+                    "sensor.inversor_battery_current", "12.5"
+                ),
+            }.get(entity_id)
+        )
+        entry = _entry(
+            {
+                CONF_TELEMETRY_SOURCE: TELEMETRY_SOURCE_HA_ENTITIES,
+                CONF_ENTITY_ID_SOC_BATERIA: "sensor.soc",
+            }
+        )
+        coordinador = CoordinadorTelemetria(hass, None, gestor, entry)
+
+        telemetria = await coordinador._async_update_data()
+
+        assert telemetria.corriente_bateria == pytest.approx(12.5)
 
     @pytest.mark.asyncio
     async def test_ha_entities_ausentes_o_no_numericos(self, hass):
