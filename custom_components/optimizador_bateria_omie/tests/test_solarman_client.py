@@ -44,18 +44,19 @@ def _cliente(hass, mapa, fake: InversorFake) -> ClienteSolarman:
 
 
 @pytest.mark.asyncio
-async def test_lectura_telemetria_familia_A(hass, mapa):
-    """Lee la telemetría de la familia A con la convención Deye."""
+async def test_lectura_telemetria_familia_estandar(hass, mapa):
+    """Lee la telemetría de la familia estandar con la convención Deye."""
     fake = InversorFake(
         registros_telemetria(
-            mapa, "A",
+            mapa, "estandar",
             soc=73.0, potencia_bat=-1200.0, corriente_bat=-24.0,
             consumo_casa=350.0, produccion_fv=800.0,
+            temperatura_inversor=35.0, temperatura_bateria=28.0,
         )
     )
     cliente = _cliente(hass, mapa, fake)
 
-    telemetria = await cliente.leer_telemetria("A")
+    telemetria = await cliente.leer_telemetria("estandar")
 
     assert telemetria.soc == pytest.approx(73.0)
     # Convención Deye (D16): +descarga / −carga
@@ -63,42 +64,21 @@ async def test_lectura_telemetria_familia_A(hass, mapa):
     assert telemetria.corriente_bateria == pytest.approx(-24.0)
     assert telemetria.consumo_casa == pytest.approx(350.0)
     assert telemetria.produccion_fv == pytest.approx(800.0)
+    # Temperaturas con offset +1000 en el crudo del mapa
+    assert telemetria.temperatura_inversor == pytest.approx(35.0)
+    assert telemetria.temperatura_bateria == pytest.approx(28.0)
     assert telemetria.ts_actualizacion is not None
 
 
 @pytest.mark.asyncio
-async def test_lectura_telemetria_familia_B(hass, mapa):
-    """Lee la telemetría de la familia B; corriente_bat no está en el mapa."""
-    fake = InversorFake(
-        registros_telemetria(
-            mapa, "B",
-            soc=73.0, potencia_bat=1200.0,
-            consumo_casa=350.0, produccion_fv=800.0,
-        )
-    )
-    cliente = _cliente(hass, mapa, fake)
-
-    telemetria = await cliente.leer_telemetria("B")
-
-    assert telemetria.soc == pytest.approx(73.0)
-    assert telemetria.potencia_bateria == pytest.approx(1200.0)
-    # Sin dirección en el mapa de la familia B → None (nunca inventado)
-    assert telemetria.corriente_bateria is None
-    assert telemetria.consumo_casa == pytest.approx(350.0)
-    assert telemetria.produccion_fv == pytest.approx(800.0)
-
-
-@pytest.mark.asyncio
 async def test_familia_por_parametro(hass, mapa):
-    """La familia llega por parámetro: el mismo fake sirve para ambas."""
-    fake = InversorFake(
-        registros_telemetria(mapa, "A", soc=42.0)
-        | registros_telemetria(mapa, "B", soc=99.0)
-    )
+    """La familia llega por parámetro al mapa de registros."""
+    fake = InversorFake(registros_telemetria(mapa, "estandar", soc=42.0))
     cliente = _cliente(hass, mapa, fake)
 
-    assert (await cliente.leer_telemetria("A")).soc == pytest.approx(42.0)
-    assert (await cliente.leer_telemetria("B")).soc == pytest.approx(99.0)
+    assert (await cliente.leer_telemetria("estandar")).soc == (
+        pytest.approx(42.0)
+    )
 
 
 @pytest.mark.asyncio

@@ -19,7 +19,7 @@ familias:
       # Añadimos voltaje y temperatura (Offset de +1000) por completitud, aunque no se usen en los sensores actuales
       voltaje_bat:    { addr: 183, scale: 0.01, unit: "V" }
       temperatura_inversor: { addr: 90,  scale: 0.1, unit: "°C", offset: 1000 }
-      temperatura_bat: { addr: 182, scale: 0.1,  unit: "°C", offset: 1000 }
+      temperatura_bateria: { addr: 182, scale: 0.1, unit: "°C", offset: 1000 }
     # NOTA: En estos manuales no se ven los registros de consumo de casa y FV en el mismo bloque, 
     # suelen estar en los registros 166 (Gen), 167/168 (Grid), 175 (Inverter output), etc.
     # Dejamos el consumo y FV apuntando a sus direcciones estándar para probar.

@@ -39,8 +39,8 @@ from custom_components.optimizador_bateria_omie.entidades_solarman import (
     SensorPotenciaBateria,
     SensorProduccionFv,
     SensorSocBateria,
+    SensorTemperaturaBateria,
     SensorTemperaturaInversor,
-    SensorTemperaturaBateria,    
 )
 from custom_components.optimizador_bateria_omie.solarman_client import (
     ClienteSolarman,

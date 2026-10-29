@@ -6,13 +6,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from custom_components.optimizador_bateria_omie.const import (
-    CONF_ENTITY_ID_CONSUMO,
-    CONF_ENTITY_ID_FV,
-    CONF_ENTITY_ID_PBAT,
-    CONF_ENTITY_ID_SOC,
+    CONF_ENTITY_ID_CONSUMO_CASA,
+    CONF_ENTITY_ID_POTENCIA_BATERIA,
+    CONF_ENTITY_ID_PRODUCCION_FV,
+    CONF_ENTITY_ID_SOC_BATERIA,
     CONF_TELEMETRY_SOURCE,
     SIGNAL_VALIDACION_CAMBIADA,
-    TELEMETRY_SOURCE_HA,
+    TELEMETRY_SOURCE_HA_ENTITIES,
     TELEMETRY_SOURCE_MODBUS,
 )
 from custom_components.optimizador_bateria_omie.entidades_solarman import (
@@ -98,20 +98,20 @@ class TestGestorValidacion:
         ) as enviar:
             await gestor.async_guardar(
                 {
-                    "familia": "A",
-                    "probe_addr": 588,
+                    "familia": "estandar",
+                    "probe_addr": 184,
                     "probe_funcion": "soc",
                     "ultima_validacion_ts": "2026-10-23T12:00:00+00:00",
                 }
             )
 
-        assert gestor.familia == "A"
-        assert store.datos["familia"] == "A"
+        assert gestor.familia == "estandar"
+        assert store.datos["familia"] == "estandar"
         enviar.assert_called_once_with(hass, SIGNAL_VALIDACION_CAMBIADA)
 
     @pytest.mark.asyncio
     async def test_borrar(self, hass):
-        store = StoreFake({"familia": "A"})
+        store = StoreFake({"familia": "estandar"})
         gestor = GestorValidacion(hass, store=store)
         await gestor.async_cargar()
 
@@ -126,20 +126,20 @@ class TestGestorValidacion:
     @pytest.mark.asyncio
     async def test_revalidar_coincide(self, hass, mapa):
         store = StoreFake(
-            {"familia": "A", "probe_addr": 588, "probe_funcion": "soc"}
+            {"familia": "estandar", "probe_addr": 184, "probe_funcion": "soc"}
         )
         gestor = GestorValidacion(hass, store=store)
 
         datos = await gestor.async_revalidar(mapa)
 
-        assert datos.get("familia") == "A"
-        assert gestor.familia == "A"
+        assert datos.get("familia") == "estandar"
+        assert gestor.familia == "estandar"
 
     @pytest.mark.asyncio
     async def test_revalidar_probe_addr_cambiado(self, hass, mapa, caplog):
         """m1: si probe_addr del Store ≠ YAML → se invalida."""
         store = StoreFake(
-            {"familia": "A", "probe_addr": 999, "probe_funcion": "soc"}
+            {"familia": "estandar", "probe_addr": 999, "probe_funcion": "soc"}
         )
         gestor = GestorValidacion(hass, store=store)
 
@@ -186,11 +186,12 @@ class TestCoordinadorTelemetria:
     @pytest.mark.asyncio
     async def test_modbus_con_familia_delega(self, hass):
         gestor = GestorValidacion(
-            hass, store=StoreFake({"familia": "A", "probe_addr": 588})
+            hass, store=StoreFake({"familia": "estandar", "probe_addr": 184})
         )
         esperado = TelemetriaInversor(
             soc=73.0, potencia_bateria=-100.0, corriente_bateria=-2.0,
             consumo_casa=350.0, produccion_fv=800.0,
+            temperatura_inversor=35.0, temperatura_bateria=28.0,
             ts_actualizacion=datetime.now(tz=UTC),
         )
         cliente = MagicMock()
@@ -201,7 +202,7 @@ class TestCoordinadorTelemetria:
 
         resultado = await coordinador._async_update_data()
 
-        cliente.leer_telemetria.assert_called_once_with("A")
+        cliente.leer_telemetria.assert_called_once_with("estandar")
         assert resultado is esperado
 
     @pytest.mark.asyncio
@@ -217,11 +218,11 @@ class TestCoordinadorTelemetria:
         )
         entry = _entry(
             {
-                CONF_TELEMETRY_SOURCE: TELEMETRY_SOURCE_HA,
-                CONF_ENTITY_ID_SOC: "sensor.soc",
-                CONF_ENTITY_ID_PBAT: "sensor.pbat",
-                CONF_ENTITY_ID_CONSUMO: "sensor.consumo",
-                CONF_ENTITY_ID_FV: "sensor.fv",
+                CONF_TELEMETRY_SOURCE: TELEMETRY_SOURCE_HA_ENTITIES,
+                CONF_ENTITY_ID_SOC_BATERIA: "sensor.soc",
+                CONF_ENTITY_ID_POTENCIA_BATERIA: "sensor.pbat",
+                CONF_ENTITY_ID_CONSUMO_CASA: "sensor.consumo",
+                CONF_ENTITY_ID_PRODUCCION_FV: "sensor.fv",
             }
         )
         coordinador = CoordinadorTelemetria(hass, None, gestor, entry)
@@ -245,11 +246,11 @@ class TestCoordinadorTelemetria:
         )
         entry = _entry(
             {
-                CONF_TELEMETRY_SOURCE: TELEMETRY_SOURCE_HA,
-                CONF_ENTITY_ID_SOC: "sensor.soc",
-                CONF_ENTITY_ID_PBAT: "sensor.pbat",   # no existe
-                CONF_ENTITY_ID_CONSUMO: "sensor.consumo",
-                CONF_ENTITY_ID_FV: "",                # sin configurar
+                CONF_TELEMETRY_SOURCE: TELEMETRY_SOURCE_HA_ENTITIES,
+                CONF_ENTITY_ID_SOC_BATERIA: "sensor.soc",
+                CONF_ENTITY_ID_POTENCIA_BATERIA: "sensor.pbat",   # no existe
+                CONF_ENTITY_ID_CONSUMO_CASA: "sensor.consumo",
+                CONF_ENTITY_ID_PRODUCCION_FV: "",                 # sin configurar
             }
         )
         coordinador = CoordinadorTelemetria(hass, None, gestor, entry)
@@ -268,16 +269,16 @@ class TestSensorFamiliaValidada:
     def test_estado_validada(self, hass):
         gestor = GestorValidacion(hass, store=StoreFake())
         gestor.estado = {
-            "familia": "A",
-            "probe_addr": 588,
+            "familia": "estandar",
+            "probe_addr": 184,
             "probe_funcion": "soc",
             "ultima_validacion_ts": "2026-10-23T12:00:00+00:00",
         }
         sensor = SensorFamiliaValidada(gestor)
 
-        assert sensor.native_value == "A"
+        assert sensor.native_value == "estandar"
         attrs = sensor.extra_state_attributes
-        assert attrs["probe_addr"] == 588
+        assert attrs["probe_addr"] == 184
         assert attrs["probe_funcion"] == "soc"
         assert attrs["ultima_validacion_ts"] == "2026-10-23T12:00:00+00:00"
 

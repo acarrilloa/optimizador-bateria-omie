@@ -77,7 +77,7 @@ class TestCarga:
     """Tests de carga y validación del YAML."""
 
     def test_yaml_empaquetado(self, mapa):
-        assert mapa.familias() == ["A", "B"]
+        assert mapa.familias() == ["estandar"]
         assert mapa.block_size == 16
         assert mapa.inverter == "deye-sun-6k-sg05lp1-am2"
 
@@ -92,9 +92,8 @@ class TestCarga:
             mapa = MapaRegistros(hass)
             mapa.cargar()
 
-        assert mapa.familias() == ["A", "B"]
-        assert "TODO" in caplog.text
-        assert "TODO" not in [
+        assert mapa.familias() == ["estandar"]
+        assert not [
             r.message for r in caplog.records if r.levelname == "WARNING"
         ]
 
@@ -112,7 +111,7 @@ class TestCarga:
         mapa = MapaRegistros(hass, ruta_override=tmp_path / "no_existe.yaml")
         mapa.cargar()
 
-        assert mapa.familias() == ["A", "B"]
+        assert mapa.familias() == ["estandar"]
 
     def test_block_size_mayor_de_16(self, hass, tmp_path):
         _escribir_override(tmp_path, YAML_BLOCK_SIZE_GRANDE)
@@ -124,7 +123,7 @@ class TestCarga:
         mapa = MapaRegistros(hass)
         await mapa.async_cargar()
 
-        assert mapa.familias() == ["A", "B"]
+        assert mapa.familias() == ["estandar"]
         hass.async_add_executor_job.assert_called_once()
 
 
@@ -132,30 +131,39 @@ class TestAccesores:
     """Tests de probe, plausibility y parametros."""
 
     def test_probe(self, mapa):
-        assert mapa.probe("A") == {"funcion": "soc", "addr": 588}
-        assert mapa.probe("B") == {"funcion": "soc", "addr": 4212}
+        assert mapa.probe("estandar") == {"funcion": "soc", "addr": 184}
 
     def test_plausibility(self, mapa):
-        plausibilidad = mapa.plausibility("A")
+        plausibilidad = mapa.plausibility("estandar")
         assert plausibilidad["soc"] == [0, 100]
         assert plausibilidad["potencia_bat"] == [-7000, 7000]
 
     def test_parametros_defaults(self, mapa):
-        params = mapa.parametros("A", "consumo_casa")
-        assert params["addr"] == 670
-        assert params["scale"] == 0.1
+        params = mapa.parametros("estandar", "produccion_fv")
+        assert params["addr"] == 186
+        assert params["scale"] == 1
         assert params["unit"] == "W"
         assert params["signed"] is False
         assert params["invertir_signo"] is False
+        assert params["offset"] == 0
 
     def test_parametros_signed(self, mapa):
-        params = mapa.parametros("A", "potencia_bat")
+        params = mapa.parametros("estandar", "potencia_bat")
+        assert params["addr"] == 190
         assert params["signed"] is True
         assert params["invertir_signo"] is False
 
+    def test_parametros_offset(self, mapa):
+        """Las temperaturas llevan offset +1000 en el crudo."""
+        params = mapa.parametros("estandar", "temperatura_inversor")
+        assert params["addr"] == 90
+        assert params["scale"] == 0.1
+        assert params["offset"] == 1000
+        assert MapaRegistros.convertir(1350, params) == pytest.approx(35.0)
+
     def test_direccion(self, mapa):
-        assert mapa.direccion("A", "soc") == 588
-        assert mapa.direccion("B", "soc") == 4212
+        assert mapa.direccion("estandar", "soc") == 184
+        assert mapa.direccion("estandar", "potencia_bat") == 190
 
     def test_familia_inexistente(self, mapa):
         with pytest.raises(ErrorMapaRegistros, match="Familia 'C'"):

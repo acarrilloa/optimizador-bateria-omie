@@ -30,6 +30,8 @@ def coordinador():
         corriente_bateria=-24.0,
         consumo_casa=350.0,
         produccion_fv=800.0,
+        temperatura_inversor=35.0,
+        temperatura_bateria=28.0,
         ts_actualizacion=datetime.now(tz=UTC),
     )
     return c

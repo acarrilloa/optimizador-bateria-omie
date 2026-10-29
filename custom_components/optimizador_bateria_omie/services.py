@@ -12,6 +12,7 @@ from homeassistant.core import (
     ServiceResponse,
     SupportsResponse,
 )
+from homeassistant.exceptions import ServiceValidationError
 
 from custom_components.optimizador_bateria_omie.const import (
     CONF_IP,
@@ -41,7 +42,9 @@ SCHEMA_PROBE = vol.Schema(
         vol.Optional("register"): vol.All(
             int, vol.Range(min=1, max=9999)
         ),
-        vol.Optional("familia"): vol.In(["A", "B"]),
+        # La familia se valida contra el mapa de registros en tiempo de
+        # ejecución (ejecutar_probe), nunca contra una lista fija.
+        vol.Optional("familia"): str,
         vol.Optional("reset", default=False): bool,
     }
 )
@@ -192,6 +195,11 @@ async def ejecutar_probe(hass, entry: ConfigEntry, datos_llamada: dict) -> dict:
     expected = float(datos_llamada["expected"])
     register = datos_llamada.get("register")
     familia_pedida = datos_llamada.get("familia")
+    if familia_pedida and familia_pedida not in mapa.familias():
+        raise ServiceValidationError(
+            f"Familia '{familia_pedida}' no existe en el mapa: "
+            f"{', '.join(mapa.familias())}"
+        )
 
     cliente = _obtener_cliente(hass, entry, datos_dominio)
 

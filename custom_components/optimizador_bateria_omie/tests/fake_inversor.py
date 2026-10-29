@@ -53,13 +53,12 @@ class InversorFake:
 def registros_telemetria(mapa, familia: str, **magnitudes) -> dict[int, int]:
     """Construye un mapa de registros crudo a partir de magnitudes físicas.
 
-    Las direcciones salen del ``MapaRegistros`` (nunca hardcodeadas) y
-    los valores crudos se calculan invirtiendo ``scale`` (enmascarado a
-    16 bits).
+    Los valores crudos se calculan invirtiendo ``convertir``:
+    ``crudo = round(valor / scale) + offset`` (enmascarado a 16 bits).
     """
     registros: dict[int, int] = {}
     for funcion, valor in magnitudes.items():
         params = mapa.parametros(familia, funcion)
-        crudo = round(valor / params["scale"]) & 0xFFFF
-        registros[mapa.direccion(familia, funcion)] = crudo
+        crudo = round(valor / params["scale"]) + params.get("offset", 0)
+        registros[mapa.direccion(familia, funcion)] = crudo & 0xFFFF
     return registros

@@ -87,11 +87,10 @@ def _registros(escenario, familia: str, soc: float, potencia_bat: float) -> dict
 
 
 @pytest.mark.asyncio
-async def test_valida_familia_A(escenario):
-    """SOC exacto en A y valor absurdo en B → solo A valida."""
-    escenario.fake.registros = (
-        _registros(escenario, "A", soc=73.0, potencia_bat=-1200.0)
-        | {4212: 0, 4214: 0}
+async def test_valida_familia_estandar(escenario):
+    """SOC exacto en la única familia del mapa → valida y persiste."""
+    escenario.fake.registros = _registros(
+        escenario, "estandar", soc=73.0, potencia_bat=-1200.0
     )
 
     respuesta = await ejecutar_probe(
@@ -99,14 +98,13 @@ async def test_valida_familia_A(escenario):
     )
 
     assert respuesta["reset"] is False
-    assert respuesta["familia_activa"] == "A"
-    assert respuesta["familias"]["A"]["resultado"] == "VALIDADA"
-    assert respuesta["familias"]["A"]["leido"] == pytest.approx(73.0)
-    assert respuesta["familias"]["A"]["plausible"] is True
-    assert respuesta["familias"]["B"]["resultado"] == "FUERA_TOLERANCIA"
+    assert respuesta["familia_activa"] == "estandar"
+    assert respuesta["familias"]["estandar"]["resultado"] == "VALIDADA"
+    assert respuesta["familias"]["estandar"]["leido"] == pytest.approx(73.0)
+    assert respuesta["familias"]["estandar"]["plausible"] is True
     # Persistido en el Store
-    assert escenario.gestor.familia == "A"
-    assert escenario.gestor.estado["probe_addr"] == 588
+    assert escenario.gestor.familia == "estandar"
+    assert escenario.gestor.estado["probe_addr"] == 184
     assert escenario.gestor.estado["probe_funcion"] == "soc"
     # La telemetría se recargó
     escenario.coordinador.async_request_refresh.assert_awaited()
@@ -115,24 +113,28 @@ async def test_valida_familia_A(escenario):
 @pytest.mark.asyncio
 async def test_tolerancia_mas_2_pct(escenario):
     """Dentro de ±2 % valida; fuera, no."""
-    # 73 esperado, 74.4 leído → desviación ≈ 1.92 % → VALIDADA
+    # 73 esperado, 74 leído (scale 1) → desviación ≈ 1.37 % → VALIDADA
     escenario.fake.registros = _registros(
-        escenario, "A", soc=74.4, potencia_bat=-100.0
+        escenario, "estandar", soc=74.0, potencia_bat=-100.0
     )
     respuesta = await ejecutar_probe(
-        escenario.hass, escenario.entry, {"expected": 73, "familia": "A"}
+        escenario.hass, escenario.entry,
+        {"expected": 73, "familia": "estandar"},
     )
-    assert respuesta["familias"]["A"]["resultado"] == "VALIDADA"
+    assert respuesta["familias"]["estandar"]["resultado"] == "VALIDADA"
 
-    # 73 esperado, 74.5 leído → desviación ≈ 2.05 % → FUERA_TOLERANCIA
+    # 73 esperado, 75 leído → desviación ≈ 2.74 % → FUERA_TOLERANCIA
     escenario.gestor.estado = {}
     escenario.fake.registros = _registros(
-        escenario, "A", soc=74.5, potencia_bat=-100.0
+        escenario, "estandar", soc=75.0, potencia_bat=-100.0
     )
     respuesta = await ejecutar_probe(
-        escenario.hass, escenario.entry, {"expected": 73, "familia": "A"}
+        escenario.hass, escenario.entry,
+        {"expected": 73, "familia": "estandar"},
     )
-    assert respuesta["familias"]["A"]["resultado"] == "FUERA_TOLERANCIA"
+    assert respuesta["familias"]["estandar"]["resultado"] == (
+        "FUERA_TOLERANCIA"
+    )
     assert respuesta["familia_activa"] is None
     assert escenario.gestor.familia is None
 
@@ -141,15 +143,16 @@ async def test_tolerancia_mas_2_pct(escenario):
 async def test_plausibilidad_fallida(escenario):
     """SOC plausible pero potencia_bat fuera de umbrales → IMPLAUSIBLE."""
     escenario.fake.registros = _registros(
-        escenario, "A", soc=73.0, potencia_bat=8000.0
+        escenario, "estandar", soc=73.0, potencia_bat=8000.0
     )
 
     respuesta = await ejecutar_probe(
-        escenario.hass, escenario.entry, {"expected": 73, "familia": "A"}
+        escenario.hass, escenario.entry,
+        {"expected": 73, "familia": "estandar"},
     )
 
-    assert respuesta["familias"]["A"]["resultado"] == "IMPLAUSIBLE"
-    assert respuesta["familias"]["A"]["plausible"] is False
+    assert respuesta["familias"]["estandar"]["resultado"] == "IMPLAUSIBLE"
+    assert respuesta["familias"]["estandar"]["plausible"] is False
     assert respuesta["familia_activa"] is None
     assert escenario.gestor.familia is None
 
@@ -157,7 +160,7 @@ async def test_plausibilidad_fallida(escenario):
 @pytest.mark.asyncio
 async def test_reset(escenario):
     """reset=true borra la validación, no sondea y devuelve {"reset": true}."""
-    escenario.gestor.estado = {"familia": "A", "probe_addr": 588}
+    escenario.gestor.estado = {"familia": "estandar", "probe_addr": 184}
 
     respuesta = await ejecutar_probe(
         escenario.hass, escenario.entry, {"expected": 73, "reset": True}
@@ -173,43 +176,37 @@ async def test_reset(escenario):
 
 @pytest.mark.asyncio
 async def test_familia_explicita(escenario):
-    """Con familia=A solo se sondea A (aunque B también coincidiera)."""
-    escenario.fake.registros = (
-        _registros(escenario, "A", soc=73.0, potencia_bat=-100.0)
-        | _registros(escenario, "B", soc=73.0, potencia_bat=-100.0)
+    """Con familia=estandar solo se sondea esa familia del mapa."""
+    escenario.fake.registros = _registros(
+        escenario, "estandar", soc=73.0, potencia_bat=-100.0
     )
 
     respuesta = await ejecutar_probe(
-        escenario.hass, escenario.entry, {"expected": 73, "familia": "A"}
+        escenario.hass, escenario.entry,
+        {"expected": 73, "familia": "estandar"},
     )
 
-    assert list(respuesta["familias"]) == ["A"]
-    assert respuesta["familia_activa"] == "A"
-    assert escenario.gestor.familia == "A"
+    assert list(respuesta["familias"]) == ["estandar"]
+    assert respuesta["familia_activa"] == "estandar"
+    assert escenario.gestor.familia == "estandar"
 
 
 @pytest.mark.asyncio
-async def test_dos_familias_coincidentes_sin_validar(escenario, caplog):
-    """Ambas candidatas → ninguna se valida (WARNING, sin persistencia)."""
-    escenario.fake.registros = (
-        _registros(escenario, "A", soc=73.0, potencia_bat=-100.0)
-        | _registros(escenario, "B", soc=73.0, potencia_bat=-100.0)
-    )
-
-    with caplog.at_level("WARNING"):
-        respuesta = await ejecutar_probe(
-            escenario.hass, escenario.entry, {"expected": 73}
+async def test_familia_inexistente_rechazada(escenario):
+    """Una familia fuera del mapa → ServiceValidationError, sin sondear."""
+    with pytest.raises(Exception, match="no existe en el mapa"):
+        await ejecutar_probe(
+            escenario.hass, escenario.entry,
+            {"expected": 73, "familia": "inventada"},
         )
 
-    assert respuesta["familia_activa"] is None
-    assert escenario.gestor.familia is None
-    assert "candidatas" in caplog.text
+    assert escenario.fake.llamadas_lectura == 0
 
 
 @pytest.mark.asyncio
 async def test_ninguna_coincide(escenario):
     """Ninguna familia dentro de tolerancia → sin validación."""
-    escenario.fake.registros = {588: 7300, 590: 0, 4212: 0, 4214: 0}
+    escenario.fake.registros = {184: 7300, 190: 0}
 
     respuesta = await ejecutar_probe(
         escenario.hass, escenario.entry, {"expected": 73}
@@ -229,8 +226,10 @@ async def test_error_comunicacion(escenario):
             escenario.hass, escenario.entry, {"expected": 73}
         )
 
-    assert respuesta["familias"]["A"]["resultado"] == "ERROR_COMUNICACION"
-    assert respuesta["familias"]["A"]["leido"] is None
+    assert respuesta["familias"]["estandar"]["resultado"] == (
+        "ERROR_COMUNICACION"
+    )
+    assert respuesta["familias"]["estandar"]["leido"] is None
     assert respuesta["familia_activa"] is None
     assert escenario.gestor.familia is None
 
@@ -238,13 +237,13 @@ async def test_error_comunicacion(escenario):
 @pytest.mark.asyncio
 async def test_registro_personalizado(escenario):
     """El campo register sustituye la dirección a sondear."""
-    # Registro 999 con valor que tras scale 0.1 (probe funcion soc) da 73.0
-    escenario.fake.registros = {999: 730, 590: 0}
+    # Registro 999 con valor 73 (probe funcion soc, scale 1)
+    escenario.fake.registros = {999: 73, 190: 0}
 
     respuesta = await ejecutar_probe(
         escenario.hass, escenario.entry,
-        {"expected": 73, "register": 999, "familia": "A"},
+        {"expected": 73, "register": 999, "familia": "estandar"},
     )
 
-    assert respuesta["familias"]["A"]["resultado"] == "VALIDADA"
+    assert respuesta["familias"]["estandar"]["resultado"] == "VALIDADA"
     assert escenario.fake.tamannos_bloque[0] == 1
