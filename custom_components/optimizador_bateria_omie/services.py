@@ -1,5 +1,5 @@
 """Servicios de la integración (F2: probe_registers)."""
-# versión 0.8.0
+# versión 0.9.0
 
 import logging
 from datetime import UTC, datetime

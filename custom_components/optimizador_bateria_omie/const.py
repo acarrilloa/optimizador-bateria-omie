@@ -1,5 +1,5 @@
 """Constantes para el componente Optimizador Batería OMIE."""
-# versión 0.8.10
+# versión 0.9.0
 
 DOMAIN = "optimizador_bateria_omie"
 
