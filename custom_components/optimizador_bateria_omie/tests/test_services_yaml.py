@@ -8,6 +8,7 @@ import yaml
 from custom_components.optimizador_bateria_omie.const import (
     DOMAIN,
     SERVICE_PROBE_REGISTERS,
+    SERVICE_REGENERATE_PLAN,
 )
 
 RUTA = Path(__file__).parent.parent / "services.yaml"
@@ -42,3 +43,12 @@ def test_campos_del_servicio():
     """Los campos declarados coinciden con el esquema voluptuous de services.py."""
     campos = _cargar()[SERVICE_PROBE_REGISTERS]["fields"]
     assert set(campos) == {"expected", "register", "familia", "reset"}
+
+
+def test_servicio_regenerate_plan_definido():
+    """regenerate_plan (F3) está descrito y sin campos ({})."""
+    claves = _cargar()
+    assert SERVICE_REGENERATE_PLAN in claves, (
+        f"Falta la descripción de {DOMAIN}.{SERVICE_REGENERATE_PLAN}"
+    )
+    assert not claves[SERVICE_REGENERATE_PLAN].get("fields")

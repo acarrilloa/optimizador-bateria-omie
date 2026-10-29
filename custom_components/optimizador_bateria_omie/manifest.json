@@ -3,11 +3,18 @@
   "name": "Optimizador Batería OMIE",
   "documentation": "https://github.com/acarrilloa/optimizador-bateria-omie",
   "issue_tracker": "https://github.com/acarrilloa/optimizador-bateria-omie/issues",
-  "codeowners": ["@acarrilloa"],
+  "codeowners": [
+    "@acarrilloa"
+  ],
   "config_flow": true,
-  "version": "0.8.10",
-  "requirements": ["pysolarmanv5>=3.0.6,<4.0.0"],
-  "dependencies": ["omie"],
+  "version": "0.9.0",
+  "requirements": [
+    "pysolarmanv5>=3.0.6,<4.0.0"
+  ],
+  "dependencies": [
+    "omie",
+    "recorder"
+  ],
   "iot_class": "local_polling",
   "homeassistant": "2026.10.1",
   "license": "MIT"

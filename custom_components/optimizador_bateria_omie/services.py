@@ -23,6 +23,7 @@ from custom_components.optimizador_bateria_omie.const import (
     DEFAULT_SERIE,
     DOMAIN,
     SERVICE_PROBE_REGISTERS,
+    SERVICE_REGENERATE_PLAN,
     TOLERANCIA_PROBE_PCT,
 )
 from custom_components.optimizador_bateria_omie.mapa_registros import (
@@ -247,20 +248,55 @@ async def ejecutar_probe(hass, entry: ConfigEntry, datos_llamada: dict) -> dict:
 
 
 def async_setup_services(hass: HomeAssistant) -> None:
-    """Registra el servicio probe_registers (idempotente)."""
+    """Registra los servicios de la integración (idempotente)."""
     if hass.services.has_service(DOMAIN, SERVICE_PROBE_REGISTERS):
+        pass
+    else:
+        async def manejar_probe(llamada: ServiceCall) -> ServiceResponse:
+            """Envoltorio del servicio: resuelve la entrada y delega."""
+            entry = hass.config_entries.async_entries(DOMAIN)[0]
+            return await ejecutar_probe(hass, entry, dict(llamada.data))
+
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_PROBE_REGISTERS,
+            manejar_probe,
+            schema=SCHEMA_PROBE,
+            supports_response=SupportsResponse.OPTIONAL,
+        )
+        _LOGGER.info(
+            "Servicio %s.%s registrado", DOMAIN, SERVICE_PROBE_REGISTERS
+        )
+
+    if hass.services.has_service(DOMAIN, SERVICE_REGENERATE_PLAN):
         return
 
-    async def manejar(llamada: ServiceCall) -> ServiceResponse:
-        """Envoltorio del servicio: resuelve la entrada y delega."""
+    async def manejar_regenerar(llamada: ServiceCall) -> ServiceResponse:
+        """Regenera el plan de batería (dry-run, sin escrituras)."""
         entry = hass.config_entries.async_entries(DOMAIN)[0]
-        return await ejecutar_probe(hass, entry, dict(llamada.data))
+        return await ejecutar_regenerate_plan(hass, entry)
 
     hass.services.async_register(
         DOMAIN,
-        SERVICE_PROBE_REGISTERS,
-        manejar,
-        schema=SCHEMA_PROBE,
+        SERVICE_REGENERATE_PLAN,
+        manejar_regenerar,
+        schema=vol.Schema({}),
         supports_response=SupportsResponse.OPTIONAL,
     )
-    _LOGGER.info("Servicio %s.%s registrado", DOMAIN, SERVICE_PROBE_REGISTERS)
+    _LOGGER.info("Servicio %s.%s registrado", DOMAIN, SERVICE_REGENERATE_PLAN)
+
+
+async def ejecutar_regenerate_plan(hass, entry: ConfigEntry) -> dict:
+    """Núcleo de regenerate_plan (D19, testeable sin registrar el servicio).
+
+    Recalcula el plan inmediatamente y devuelve el resumen
+    ``{recalculado, accion_actual, ahorro_estimado}``.
+    """
+    datos_dominio = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+    coordinador_plan = datos_dominio.get("coordinador_plan")
+    if coordinador_plan is None:
+        raise ServiceValidationError(
+            "El coordinador del plan no está disponible: la integración "
+            "debe estar cargada con F3 activo"
+        )
+    return await coordinador_plan.async_regenerar()

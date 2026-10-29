@@ -1,4 +1,4 @@
-# versión 0.8.4
+# versión 0.9.0
 probe_registers:
   fields:
     expected:
@@ -34,3 +34,8 @@ probe_registers:
       default: false
       selector:
         boolean: {}
+regenerate_plan:
+  name: "Regenerar plan"
+  description: >-
+    Recalcula inmediatamente el plan de la batería (predicción + precios
+    + SOC real). Dry-run: no escribe en el inversor.
