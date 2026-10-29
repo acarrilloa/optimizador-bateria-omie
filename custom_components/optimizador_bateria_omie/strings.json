@@ -18,7 +18,25 @@
           "entity_id_consumo_casa": "Entidad Consumo Casa",
           "entity_id_produccion_fv": "Entidad Producción FV",
           "entity_id_temp_inversor": "Entidad Temperatura Inversor",
-          "entity_id_temp_bateria": "Entidad Temperatura Batería"
+          "entity_id_temp_bateria": "Entidad Temperatura Batería",
+          "ventana_historico_dias": "Ventana de histórico (días)",
+          "permitir_carga_red": "Permitir carga desde red",
+          "permitir_venta_red": "Permitir venta a red",
+          "precio_max_compra": "Precio máximo de compra (€/kWh)",
+          "precio_min_venta": "Precio mínimo de venta (€/kWh)",
+          "margen_arbitraje": "Margen de arbitraje (€/kWh)",
+          "soc_min": "SOC mínimo (%)",
+          "soc_max": "SOC máximo (%)",
+          "potencia_max_carga": "Potencia máxima de carga (W)",
+          "potencia_max_descarga": "Potencia máxima de descarga (W)",
+          "potencia_contratada": "Potencia contratada (W)",
+          "margen_potencia": "Margen bajo potencia contratada (W)",
+          "eficiencia_round_trip": "Eficiencia round-trip (%)",
+          "desviacion_soc_replan_pct": "Desviación de SOC para replanificar (%)",
+          "festivos_locales": "Festivos locales (MM-DD separados por comas)",
+          "capacidad_bateria_kwh": "Capacidad de batería (kWh)",
+          "entity_id_prevision_fv_hoy": "Entidad Solcast previsión FV hoy",
+          "entity_id_prevision_fv_manana": "Entidad Solcast previsión FV mañana"
         }
       },
       "reconfigure": {
@@ -38,7 +56,25 @@
           "entity_id_consumo_casa": "Entidad Consumo Casa",
           "entity_id_produccion_fv": "Entidad Producción FV",
           "entity_id_temp_inversor": "Entidad Temperatura Inversor",
-          "entity_id_temp_bateria": "Entidad Temperatura Batería"
+          "entity_id_temp_bateria": "Entidad Temperatura Batería",
+          "ventana_historico_dias": "Ventana de histórico (días)",
+          "permitir_carga_red": "Permitir carga desde red",
+          "permitir_venta_red": "Permitir venta a red",
+          "precio_max_compra": "Precio máximo de compra (€/kWh)",
+          "precio_min_venta": "Precio mínimo de venta (€/kWh)",
+          "margen_arbitraje": "Margen de arbitraje (€/kWh)",
+          "soc_min": "SOC mínimo (%)",
+          "soc_max": "SOC máximo (%)",
+          "potencia_max_carga": "Potencia máxima de carga (W)",
+          "potencia_max_descarga": "Potencia máxima de descarga (W)",
+          "potencia_contratada": "Potencia contratada (W)",
+          "margen_potencia": "Margen bajo potencia contratada (W)",
+          "eficiencia_round_trip": "Eficiencia round-trip (%)",
+          "desviacion_soc_replan_pct": "Desviación de SOC para replanificar (%)",
+          "festivos_locales": "Festivos locales (MM-DD separados por comas)",
+          "capacidad_bateria_kwh": "Capacidad de batería (kWh)",
+          "entity_id_prevision_fv_hoy": "Entidad Solcast previsión FV hoy",
+          "entity_id_prevision_fv_manana": "Entidad Solcast previsión FV mañana"
         }
       }
     },
