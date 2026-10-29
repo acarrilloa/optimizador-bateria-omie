@@ -1,5 +1,5 @@
 """Constantes para el componente Optimizador Batería OMIE."""
-# versión 0.8.8
+# versión 0.8.10
 
 DOMAIN = "optimizador_bateria_omie"
 
@@ -11,12 +11,13 @@ VERSION_STORE_PROBE = 1
 # Señal dispatcher al cambiar el estado de validación
 SIGNAL_VALIDACION_CAMBIADA = f"{DOMAIN}_validacion_cambiada"
 
-# Telemetría Solarman (F2)
+# --- Telemetría Solarman (F2) ---
 CONF_IP = "ip"
 CONF_PUERTO = "puerto"
 CONF_SERIE = "serie"
 CONF_TELEMETRY_SOURCE = "telemetry_source"
 CONF_INTERVALO_TELEMETRIA = "intervalo_telemetria_s"
+
 # Configuración de entidades externas (telemetry_source: ha_entities)
 CONF_ENTITY_ID_SOC_BATERIA = "entity_id_soc_bateria"
 CONF_ENTITY_ID_POTENCIA_BATERIA = "entity_id_potencia_bateria"
@@ -25,13 +26,14 @@ CONF_ENTITY_ID_PRODUCCION_FV = "entity_id_produccion_fv"
 CONF_ENTITY_ID_TEMP_INVERSOR = "entity_id_temp_inversor"
 CONF_ENTITY_ID_TEMP_BATERIA = "entity_id_temp_bateria"
 
+# Fuentes de telemetría (unificado con config_flow.py)
 TELEMETRY_SOURCE_MODBUS = "solarman_modbus"
-TELEMETRY_SOURCE_HA = "ha_entities"
+TELEMETRY_SOURCE_HA_ENTITIES = "ha_entities"
 
 # Defaults de conexión (D10): editables en el config flow
 DEFAULT_IP = "192.168.1.76"
 DEFAULT_PUERTO = 8899
-DEFAULT_SERIE = 3178171873
+DEFAULT_SERIE = "3178171873"  # String para consistencia con el config_flow
 DEFAULT_TELEMETRY_SOURCE = TELEMETRY_SOURCE_MODBUS
 DEFAULT_INTERVALO_TELEMETRIA = 30
 
@@ -39,7 +41,7 @@ DEFAULT_INTERVALO_TELEMETRIA = 30
 SERVICE_PROBE_REGISTERS = "probe_registers"
 TOLERANCIA_PROBE_PCT = 2.0
 
-# Configuración por defecto
+# Configuración por defecto (F1)
 DEFAULT_FUENTE_PRIORITARIA = "omie"
 DEFAULT_USAR_CACHE = True
 DEFAULT_DIAS_CACHE = 7
@@ -55,6 +57,9 @@ SENSOR_POTENCIA_BATERIA = f"{DOMAIN}_potencia_bateria"
 SENSOR_CORRIENTE_BATERIA = f"{DOMAIN}_corriente_bateria"
 SENSOR_CONSUMO_CASA = f"{DOMAIN}_consumo_casa"
 SENSOR_PRODUCCION_FV = f"{DOMAIN}_produccion_fv"
+# Nuevos unique_ids para temperatura
+SENSOR_TEMPERATURA_INVERSOR = f"{DOMAIN}_temperatura_inversor"
+SENSOR_TEMPERATURA_BATERIA = f"{DOMAIN}_temperatura_bateria"
 
 # Atributos
 ATTR_MIN = "min"
