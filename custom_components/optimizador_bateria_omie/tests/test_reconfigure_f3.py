@@ -1,6 +1,6 @@
 """Tests del reconfigure ampliado de F3 (M3: editables en caliente)."""
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 import voluptuous as vol
