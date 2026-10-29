@@ -32,6 +32,11 @@ from custom_components.optimizador_bateria_omie.entidades import (
     SensorPrecioEstadisticas,
     SensorPreciosEfectivosHoy,
 )
+from custom_components.optimizador_bateria_omie.entidades_plan import (
+    SensorAhorroEstimadoHoy,
+    SensorPlan,
+    SensorPrediccionConsumo,
+)
 from custom_components.optimizador_bateria_omie.entidades_solarman import (
     SensorConsumoCasa,
     SensorCorrienteBateria,
@@ -113,5 +118,14 @@ async def async_setup_entry(
         SensorTemperaturaInversor(coordinador_telemetria),
         SensorTemperaturaBateria(coordinador_telemetria),
     ])
+
+    # Entidades del plan (F3): reusan el CoordinadorPlan del setup
+    if "coordinador_plan" in datos_dominio:
+        coordinador_plan = datos_dominio["coordinador_plan"]
+        entidades.extend([
+            SensorPrediccionConsumo(coordinador_plan),
+            SensorPlan(coordinador_plan),
+            SensorAhorroEstimadoHoy(coordinador_plan),
+        ])
 
     async_add_entities(entidades)
