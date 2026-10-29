@@ -6,8 +6,8 @@
 >
 > - **F1** — Precios: ✅ **implementada y en producción doméstica** (manifest 0.7.3).
 > - **F2** — Telemetría: ✅ **completada** (manifest **0.8.10**). Vía operativa: **`ha_entities`** (integración oficial Solarman). `solarman_modbus` queda preparado pero inactivo por limitación de hardware del datalogger.
-> - **F3** a **F6** — 🚧 diseño, no implementadas. F3 puede avanzar sin bloqueos.
->
+> - **F3** — Predicción v1 + planificador greedy: ✅ **completada** (manifest **0.9.0**): perfil estadístico del recorder + **Solcast como fuente preferente de FV** (perfil como fallback por día) + plan greedy en `dry_run` (sin escrituras).
+> - **F4** a **F6** — 🚧 diseño, no implementadas.>
 > Cada apartado lleva la marca **✅ F1**, **✅ F2**, **🚧 Fn** según corresponda.
 
 ---
@@ -18,8 +18,8 @@ El componente se ejecuta dentro de Home Assistant y, en su versión completa (F1
 
 1. **Obtener los precios del mercado diario OMIE con resolución de 15 minutos** (MTU15, operativo en España desde el 1 de octubre de 2025). ✅ F1
 2. **Leer el estado del inversor Deye**: SOC, potencias de carga/descarga, consumo de casa, producción FV, **temperatura del inversor y de la batería**. ✅ F2 (vía entidades de la integración oficial Solarman; `solarman_modbus` preparado como alternativa).
-3. **Predecir el consumo** con histórico (HA recorder + InfluxDB) + calendario + clima. 🚧 F3/F5
-4. **Calcular un plan horario por tramos de 15 min** que prioriza el autoconsumo y aplica arbitraje. 🚧 F3/F5
+3. **Predecir el consumo** con histórico (HA recorder + InfluxDB) + calendario + clima. ✅ F3 (capa 1: perfil estadístico; Solcast para FV) 🚧 F5 (ML + clima)
+4. **Calcular un plan horario por tramos de 15 min** que prioriza el autoconsumo y aplica arbitraje. ✅ F3 (greedy en `dry_run`) 🚧 F5 (LP)
 5. **Aplicar el plan escribiendo** en el inversor con salvaguardas (dry-run, write-verify, watchdog, fallback). 🚧 F4
 
 Prioridad de estrategia: **autoconsumo + arbitraje cuando convenga**.
@@ -27,6 +27,7 @@ Prioridad de estrategia: **autoconsumo + arbitraje cuando convenga**.
 **Estado actual**:
 - **F1 en producción**: precios OMIE, precio efectivo 2.0TD, clasificación por período tarifario y estadísticas en 5 sensores (se añadió `SensorPreciosEfectivosHoy` como curva completa).
 - **F2 completada**: telemetría de 8 sensores (SOC, potencia, corriente, consumo, FV, temperatura inversor, temperatura batería, familia validada) leyendo de la integración Solarman vía `ha_entities`. La vía `solarman_modbus` está implementada y probada pero **no es operativa** con el datalogger actual (ver §5.3 y §12.2).
+- **F3 completada (0.9.0)**: predicción de consumo por perfil estadístico del recorder (p10/p50/p90 por tramo × tipo de día), previsión FV con **Solcast preferente** y fallback por día al perfil, planificador greedy en `dry_run` (sin escrituras), sensores `prediccion_consumo` / `plan` / `ahorro_estimado_hoy`, `switch.festivo_hoy`, servicio `regenerate_plan` y todos los parámetros editables por `reconfigure`. En **revisión manual de 1 semana** antes de F4.
 
 ---
 
@@ -93,25 +94,26 @@ Prioridad de estrategia: **autoconsumo + arbitraje cuando convenga**.
 - **Restricción dura**: importación total (consumo + carga batería) ≤ **5,75 kW**.
 - Todos los umbrales como entidades `number`/`switch` modificables sin reiniciar.
 
-### RF-05 — Predicción de consumo 🚧 F3/F5
+### RF-05 — Predicción de consumo ✅ F3 (capa 1) 🚧 F5 (ML)
 
 - Predicción de consumo por tramos de 15 min para hoy + mañana.
 - **Fuentes de histórico disponibles**:
-  - **HA recorder**: datos recientes (últimos días/semanas).
-  - **InfluxDB**: histórico completo (años), vía consulta desde el componente o desde los sensores ya existentes.
+  - **HA recorder**: datos recientes (últimos días/semanas). ✅ **Usado en F3** (`historico.py` + `FuenteHistoricoRecorder`, ventana configurable 7–90 días, default 28).
+  - **InfluxDB**: histórico completo (años) — **TODO documentado**, no consultado en F3 (decisión D4 del PLAN_F3).
 - Features del modelo: `tramo_dia`, `dia_semana`, `es_festivo`, `es_vacaciones`, `temperatura_media`, `irradiancia`, `consumo_mismo_tramo_{7,14,21,28}d`.
 - Implementación por capas:
-  1. **F3**: perfil estadístico (mediana por tramo × tipo de día).
+  1. **F3** ✅: perfil estadístico (mediana p50 por tramo × tipo de día con banda p10–p90; cascada tipo → opuesto → global → `None` sin inventar valores).
   2. **F5**: ML (Gradient Boosting / LightGBM con scikit-learn).
+- **Previsión FV (F3)** ✅: **Solcast PV Forecast como fuente preferente** (`detailedForecast` de las entidades de hoy y mañana, mapeo 30→15 min por repetición, kWh/periodo → W) con **fallback por día al perfil estadístico**; fuente expuesta como atributo `fuente_fv`.
 - Salida: `{p50, p10, p90}` en W. Banda p10-p90 para el planner conservador.
 
-### RF-06 — Planificador y ejecutor 🚧 F3/F4
+### RF-06 — Planificador y ejecutor ✅ F3 (greedy dry-run) 🚧 F4 (executor) / F5 (LP)
 
 - Plan por tramos de 15 min: `AUTOCONSUMO` / `CARGA_RED` / `VENTA_RED` / `MANTENER`, potencia objetivo, SOC previsto, beneficio marginal estimado.
-- **F3**: planner greedy en `dry_run` con sensor de plan + ahorro estimado.
+- **F3** ✅: planner greedy en `dry_run` (`planificador.py` + `coordinador_plan.py` + `sensor.plan` + `sensor.ahorro_estimado_hoy` + `switch.festivo_hoy` + servicio `regenerate_plan`). **Sin escrituras al inversor**.
 - **F4**: executor con write-verify, límite de escrituras, watchdog y fallback.
 - **F5**: LP con PuLP/SciPy.
-- Recalcula ante: precios nuevos, cambio de parámetros, desviación >10 % entre SOC real y previsto, o fallo de comunicación.
+- Recalcula ante: precios nuevos, cambio de parámetros (reconfigure recarga la entrada, aplicación inmediata), cambio de tramo (15 min), desviación >10 % entre SOC real y previsto, o festivo manual.
 
 ---
 
@@ -543,7 +545,7 @@ Sin cambios respecto a versiones anteriores.
 |---|---|---|---|
 | **F1 — Precios** | `ClienteOmie` + `ModeloTarifa` + `CoordinadorDatosOmie` + 5 sensores + config flow | ✅ **completada** (0.7.3) | Precios coinciden con `sensor.omie_precios_de_es_hoy`; clasificación 2.0TD correcta; precio efectivo validado |
 | **F2 — Telemetría** | `ClienteSolarman` (preparado) + `MapaRegistros` + `registers.yaml` + `CoordinadorTelemetria` (`ha_entities` operativo) + `probe_registers` + **8 sensores** + deuda F1 (#1, #2, #7) | ✅ **completada** (0.8.10) | SOC, potencia y **temperaturas** operativos vía `ha_entities`; convención Deye confirmada; automatización del ventilador funcionando; suite de tests + `ruff` limpios |
-| **F3 — Predicción v1 + Planner greedy** | Forecaster estadístico (HA recorder + InfluxDB) + planner greedy en `dry_run` + `sensor.plan` + `sensor.ahorro_hoy` | 🚧 pendiente | Plan diario plausible 1 semana en `dry_run` |
+| **F3 — Predicción v1 + Planner greedy** | `historico.py` + `predictor_consumo.py` (perfil recorder + Solcast preferente con fallback por día) + `planificador.py` (greedy) + `coordinador_plan.py` + 3 sensores (`prediccion_consumo`, `plan`, `ahorro_estimado_hoy`) + `switch.festivo_hoy` + servicio `regenerate_plan` + reconfigure ampliado | ✅ **completada** (0.9.0) | Plan diario plausible 1 semana en `dry_run` (revisión manual en curso) |
 | **F4 — Control** | Executor con write-verify, límite escrituras, fallback, watchdog. **Requiere gateway RS485** para `solarman_modbus` | 🚧 pendiente | 1 semana sin errores; escrituras verificadas |
 | **F5 — ML + LP** | Forecaster ML + LP + banda p90 + auditoría + reentrenamiento | 🚧 pendiente | MAPE < 20 %; ahorro real medible |
 | **F6 — Pulido** | Dashboard, notificaciones, informes | 🚧 pendiente | 30 días sin intervención |
@@ -667,7 +669,7 @@ optimizador-bateria-omie/
 - `unique_id` con prefijo `optimizador_bateria_omie_`.
 - `entity_id` derivado del `device_info`: `sensor.inversor_optimizador_bateria_omie_*`.
 
-**Ficheros futuros** (F3+): `forecaster.py`, `planner.py`, `executor.py`.
+**Ficheros** (convención española de §11, decisión D1 del PLAN_F3): F1/F2 según arriba; F3: `historico.py`, `predictor_consumo.py`, `planificador.py`, `coordinador_plan.py`, `entidades_plan.py`, `switch.py`. **Futuro** (F4+): `executor.py`.
 
 ---
 
@@ -689,8 +691,8 @@ optimizador-bateria-omie/
 ### 12.2 Pendientes de confirmar / bloqueos
 
 1. **Gateway RS485→TCP** (Elfin EW11 o similar) — necesario para activar `solarman_modbus` (F4 escritura). Sin él, F2 queda en `ha_entities` y F4 no puede escribir.
-2. **Entidad de clima** y lista de **festivos locales** — F3.
-3. **Previsión FV** (Solcast u otro) — opcional, mejora el plan.
+2. **Entidad de clima** — F5 (el perfil F3 no usa clima). Lista de **festivos locales** — ✅ configurable por `reconfigure` (`festivos_locales`, "MM-DD").
+3. **Previsión FV** — ✅ **Solcast PV Forecast confirmada** e integrada en F3 como fuente preferente con fallback al perfil estadístico.
 4. **Endpoint OMIE a 15 min** — condición para deuda #3.
 
 ### 12.3 Deuda técnica
@@ -706,7 +708,7 @@ optimizador-bateria-omie/
 | 7 | Log de ciclos con `tramos mañana` | F2 | ✅ **resuelta** |
 | 8 | Limpieza manual de entidades `_2` | Manual | pendiente (usuario) |
 | 9 | **Activar `solarman_modbus` cuando haya gateway RS485** | **F4** | 🚧 bloqueada por hardware |
-| 10 | **Publicar `corriente_bateria` en `ha_entities`** | F3 (si Solarman la expone) | opcional |
+| 10 | **Publicar `corriente_bateria` en `ha_entities`** | ~~F3~~ | ⏸️ **aplazada** (decisión M2 del PLAN_F3): el usuario no ha confirmado una entidad fiable en Solarman; no bloquea nada |
 
 ---
 
