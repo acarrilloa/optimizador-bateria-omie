@@ -932,8 +932,8 @@ class TestAuditoria:
         lineas = self._leer_lineas(hass)
         # 3 reales (fallidas) + 1 línea de valores seguros del fallback
         assert any(linea["accion"] == "FALLBACK" for linea in lineas)
-        fallback = [
+        fallback = next(
             linea for linea in lineas if linea["accion"] == "FALLBACK"
-        ][0]
+        )
         assert fallback["ejecutada"] is True
         assert fallback["verificado"] == "fallback"
