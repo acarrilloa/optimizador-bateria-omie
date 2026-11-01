@@ -7,7 +7,7 @@
 > - **F1** — Precios: ✅ **implementada y en producción doméstica** (manifest 0.7.3).
 > - **F2** — Telemetría: ✅ **completada** (manifest 0.8.10). Vía operativa: **`ha_entities`** (integración oficial Solarman). `solarman_modbus` queda preparado pero inactivo por limitación de hardware del datalogger.
 > - **F3** — Predicción v1 + planificador greedy: ✅ **completada** (manifest 0.9.0): perfil estadístico del recorder + **Solcast como fuente preferente de FV** (perfil como fallback por día) + plan greedy en `dry_run` (sin escrituras).
-> - **F4** — Control: 🚧 **en diseño**. Bloqueo de hardware **resuelto**: la escritura se hará vía los servicios `solarman.write_*` de la integración oficial, sin necesidad de gateway RS485.
+> - **F4** — Control: ✅ **completada** (manifest **0.10.0**): `EjecutorControl` vía servicios `solarman.write_single_register`/`write_multiple_registers`/`read_holding_registers` con write-verify, rate limiter, watchdog, guard dinámico de 5,75 kW, bloqueo por fallo (103-106), activación gradual, fallback con notificación, `force_mode`/`release_manual`, 8 `number` calientes, `switch.control_activo` (default OFF) y auditoría JSONL.
 > - **F5** a **F6** — 🚧 diseño, no implementadas.
 >
 > Cada apartado lleva la marca **✅ F1**, **✅ F2**, **✅ F3**, **🚧 Fn** según corresponda.
@@ -22,7 +22,7 @@ El componente se ejecuta dentro de Home Assistant y, en su versión completa (F1
 2. **Leer el estado del inversor Deye**: SOC, potencias de carga/descarga, consumo de casa, producción FV, **temperatura del inversor y de la batería**. ✅ F2 (vía entidades de la integración oficial Solarman; `solarman_modbus` preparado como alternativa).
 3. **Predecir el consumo** con histórico (HA recorder + InfluxDB) + calendario + clima. ✅ F3 (capa 1: perfil estadístico; Solcast para FV) 🚧 F5 (ML + clima)
 4. **Calcular un plan horario por tramos de 15 min** que prioriza el autoconsumo y aplica arbitraje. ✅ F3 (greedy en `dry_run`) 🚧 F5 (LP)
-5. **Aplicar el plan escribiendo** en el inversor con salvaguardas (dry-run, write-verify, watchdog, fallback). 🚧 F4 (vía servicios de Solarman).
+5. **Aplicar el plan escribiendo** en el inversor con salvaguardas (dry-run, write-verify, watchdog, fallback). ✅ F4 (vía servicios de Solarman; sin escrituras hasta `control_activo=on`).
 
 Prioridad de estrategia: **autoconsumo + arbitraje cuando convenga**.
 
@@ -30,7 +30,7 @@ Prioridad de estrategia: **autoconsumo + arbitraje cuando convenga**.
 - **F1 en producción**: precios OMIE, precio efectivo 2.0TD, clasificación por período tarifario y estadísticas en 5 sensores (se añadió `SensorPreciosEfectivosHoy` como curva completa).
 - **F2 completada**: telemetría de 8 sensores (SOC, potencia, corriente, consumo, FV, temperatura inversor, temperatura batería, familia validada) leyendo de la integración Solarman vía `ha_entities`. La vía `solarman_modbus` está implementada y probada pero **no es operativa** con el datalogger actual.
 - **F3 completada (0.9.0)**: predicción de consumo por perfil estadístico del recorder (p10/p50/p90 por tramo × tipo de día), previsión FV con **Solcast preferente** y fallback por día al perfil, planificador greedy en `dry_run` (sin escrituras), sensores `prediccion_consumo` / `plan` / `ahorro_estimado_hoy`, `switch.festivo_hoy`, servicio `regenerate_plan` y todos los parámetros editables por `reconfigure`. En **revisión manual de 1 semana** antes de F4.
-- **F4 en diseño**: se ha verificado que los servicios `solarman.write_multiple_registers` y `solarman.write_single_register` de la integración oficial permiten escribir en el inversor (con una latencia de unos segundos). El Executor se construirá sobre esta base, eliminando la necesidad del gateway RS485.
+- **F4 completada (0.10.0)**: `executor.py` escribe en los registros de control (210/211/230/232/217/218 del `registers.yaml`) vía los servicios `solarman.write_*` con write-verify por relectura (`read_holding_registers`), rate limiter (12/h), watchdog, guard dinámico de potencia contratada (95 %/100 %), bloqueo por fallo del inversor, modo gradual (solo CARGA_RED en valle), fallback con `persistent_notification`, auditoría JSONL en `config/optimizador_bateria_omie/`, servicios `force_mode`/`release_manual`, `switch.control_activo` (default OFF → dry-run forzado), 8 `number` calientes y sensor diagnóstico `estado_control`. Deuda #5 (tarifa en `entry.data`) resuelta. **Primera activación real pendiente del usuario** (valle nocturno, observada contra la APP Solarman).
 
 ---
 
@@ -82,19 +82,19 @@ Prioridad de estrategia: **autoconsumo + arbitraje cuando convenga**.
 - **Vía preparada: `solarman_modbus`** — implementada en `ClienteSolarman` con `pysolarmanv5`, `MapaRegistros` de dos familias (A/B), `probe_registers` con tolerancia ±2 %, plausibilidad y reset. **No operativa** hasta disponer de gateway RS485.
 - **F2 es estrictamente de solo lectura**.
 
-### RF-03 — Control de carga/descarga 🚧 F4
+### RF-03 — Control de carga/descarga ✅ F4
 
 - Servicios para ajustar corriente/potencia de carga y descarga, SOC objetivo, SOC mínimo, carga desde red y venta a red.
 - **Mecanismo de escritura**: uso de los servicios `solarman.write_multiple_registers` o `solarman.write_single_register` de la integración oficial. Se descarta `solarman.write_multiple_holding_registers` por estar deprecado.
 - **Mapa de registros configurable** en `registers.yaml` (nunca en código). `probe_registers` valida familia antes de permitir escrituras (en caso de usar `solarman_modbus`).
-- Límite de seguridad: **máx N escrituras por hora** (default 12) + **write-verify** tras cada escritura.
+- Límite de seguridad: **máx N escrituras por hora** (default 12, configurable 1–48) + **write-verify** tras cada escritura (relectura a los `latencia_verify_s`, 3 s; 3 fallos consecutivos → fallback con valores seguros 232=0/230=0 + `persistent_notification` + reactivación solo manual). ✅ F4
 
-### RF-04 — Compra/venta con parámetros ajustables 🚧 F4/F5
+### RF-04 — Compra/venta con parámetros ajustables ✅ F4 (guard) 🚧 F5 (LP)
 
 - **Comprar** (cargar desde red) cuando el precio proyectado esté bajo el umbral y bajo el precio medio ponderado de descarga esperada.
 - **Vender** (verter a red) cuando el precio supere el umbral y compense la eficiencia round-trip: `p_venta ≥ p_compra_efectiva / η_round_trip + margen`. Venta al mismo precio que la compra (§5.6).
 - **Restricción dura**: importación total (consumo + carga batería) ≤ **5,75 kW**.
-- Todos los umbrales como entidades `number`/`switch` modificables sin reiniciar.
+- Todos los umbrales como entidades `number`/`switch` modificables sin reiniciar. ✅ F4: 8 `number` calientes + guard dinámico (importación vía registro 169 o cálculo derivado; > 95 % → reduce; ≥ 100 % → 0 A).
 
 ### RF-05 — Predicción de consumo ✅ F3 (capa 1) 🚧 F5 (ML)
 
@@ -112,7 +112,7 @@ Prioridad de estrategia: **autoconsumo + arbitraje cuando convenga**.
 
 - Plan por tramos de 15 min: `AUTOCONSUMO` / `CARGA_RED` / `VENTA_RED` / `MANTENER`, potencia objetivo, SOC previsto, beneficio marginal estimado.
 - **F3** ✅: planner greedy en `dry_run` (`planificador.py` + `coordinador_plan.py` + `sensor.plan` + `sensor.ahorro_estimado_hoy` + `switch.festivo_hoy` + servicio `regenerate_plan`). **Sin escrituras al inversor**.
-- **F4** 🚧: executor con write-verify, límite de escrituras, watchdog y fallback (ver §5.11).
+- **F4** ✅: executor con write-verify, límite de escrituras, watchdog, guard y fallback (ver §5.11).
 - **F5**: LP con PuLP/SciPy.
 
 ---
@@ -330,7 +330,7 @@ familias:
 - F2: campos nuevos (`ip`, `puerto`, `serie`, `telemetry_source`, `intervalo_telemetria_s`, 6 `entity_id`).
 - F3: añade `switch.festivo_hoy`, servicio `regenerate_plan` y amplía `reconfigure`.
 
-### 5.11 `Executor` 🚧 F4
+### 5.11 `Executor` ✅ F4
 
 Fichero: `executor.py`.
 
@@ -345,11 +345,13 @@ Fichero: `executor.py`.
 3. Si `dry_run=True` (por defecto), solo loguea las escrituras. No las ejecuta.
 4. Si `dry_run=False`, invoca el servicio de Solarman y espera **3 segundos** (latencia observada).
 5. Relee el registro escrito vía `hass.states.get` (o vía el propio servicio si expone lectura) para verificar el cambio.
-6. Si el `write-verify` falla 3 veces consecutivas, activa `fallback`: vuelve a `AUTOCONSUMO` con valores seguros y deshabilita escrituras.
+6. Si el `write-verify` falla 3 veces consecutivas (valor leído ≠ escrito; los errores de relectura cuentan como verify "parcial" y no suman), activa `fallback`: escribe los valores seguros (232=0, 230=0 del YAML, sin pasar por el rate limiter), apaga `control_activo` automáticamente, emite `persistent_notification` y exige reactivación manual.
 
-**Entidad habilitadora**: `switch.optimizador_bateria_omie_control_activo`. Por defecto en `off`. Hasta que el usuario lo active, `dry_run=True` forzado.
+**Implementación real (F4)**: `EscritorSolarman` aísla el payload de `solarman.write_single_register` / `write_multiple_registers` / `read_holding_registers` (device configurado o resolución automática del primer device de la integración). `EjecutorControl` traduce cada acción a registros: 210 = corriente equivalente a `potencia_max_carga` (constante entre tramos, nunca la corriente del tramo para no estrangular la carga solar), 230/232 solo carga desde red, 211 solo en VENTA_RED; conversión W→A con `voltaje_bateria_nominal` (51,2 V) y recorte SIEMPRE a los límites del YAML (0–135 A). Al activar se escriben 217/218 con `soc_recuperacion > soc_min`. `modo_activacion` gradual (default): solo CARGA_RED en valle 2.0TD se ejecuta; el resto se simula y se audita. Watchdog (telemetría > 2× intervalo o plan ausente → no escribir; carga activa → fallback). Bloqueo por fallo (entity_ids_fallo, Deye 103-106 ≠ 0). Auditoría JSONL append-only en `config/optimizador_bateria_omie/auditoria_escrituras.jsonl` con `{ts, tramo, accion, registros, ejecutada, verificado, latencia, motivo, guard}`.
 
-**Límite de escrituras**: máximo 12/hora.
+**Entidad habilitadora**: `switch.optimizador_bateria_omie_control_activo`. Por defecto en `off`. Hasta que el usuario lo active, ninguna escritura real (todo se traduce, loguea y audita con `ejecutada: false`).
+
+**Límite de escrituras**: máximo 12/hora (1–48 configurable), ventana deslizante; superado → aplazado al siguiente tramo con WARNING.
 
 ---
 
@@ -379,13 +381,14 @@ Fichero: `executor.py`.
 | `switch.*_festivo_hoy` | marca manual festivo/vacaciones | ✅ F3 |
 | `sensor.*_ahorro_real_hoy` | € ahorrados reales (auditoría) | 🚧 F5 |
 | `sensor.*_forecast_quality` | MAPE del backtest | 🚧 F5 |
-| `switch.*_control_activo` | habilita escritura (desactiva dry-run) | 🚧 F4 |
-| `number.*_precio_max_compra` | umbral de compra | 🚧 F4 |
-| `number.*_precio_min_venta` | umbral de venta | 🚧 F4 |
-| `number.*_margen_arbitraje` | margen mínimo | 🚧 F4 |
-| `number.*_soc_min` / `_soc_max` | límites SOC | 🚧 F4 |
-| `number.*_potencia_max_carga` / `_descarga` | límites potencia | 🚧 F4 |
-| `number.*_eficiencia_round_trip` | 70–95 % | 🚧 F4 |
+| `switch.*_control_activo` | habilita escritura (default OFF → dry-run forzado) | ✅ F4 |
+| `number.*_precio_max_compra` | umbral de compra (0–1 €/kWh) | ✅ F4 |
+| `number.*_precio_min_venta` | umbral de venta | ✅ F4 |
+| `number.*_margen_arbitraje` | margen mínimo | ✅ F4 |
+| `number.*_soc_min` / `_soc_max` | límites SOC | ✅ F4 |
+| `number.*_potencia_max_carga` / `_descarga` | límites potencia | ✅ F4 |
+| `number.*_eficiencia_round_trip` | 70–95 % | ✅ F4 |
+| `sensor.*_estado_control` | inactivo/dry_run/activo/fallback_bloqueado (diagnóstico) | ✅ F4 |
 
 ### 6.4 Servicios
 
@@ -393,7 +396,7 @@ Fichero: `executor.py`.
 
 **F3 ✅ — `optimizador_bateria_omie.regenerate_plan`**: fuerza un recálculo del plan (sin argumentos).
 
-**F4 🚧 — `force_mode`, `release_manual`**: pendientes de implementación.
+**F4 ✅ — `force_mode(mode, until)` / `release_manual`**: el modo manual respeta TODAS las salvaguardas y expira solo en `until` (ISO 8601 futuro); `release_manual` lo libera inmediatamente.
 
 ---
 
@@ -415,7 +418,7 @@ Fichero: `executor.py`.
 
 ### 7.2 Modelo de tarifa ✅ F1 (hardcodeado)
 
-Peajes, cargos, impuestos y potencia contratada en `tarifa.py`. **Deuda #5 (F4)**: mover a `entry.data`.
+Peajes, cargos, impuestos y potencia contratada en `entry.data` (`ConfiguracionTarifa.desde_entry`, defaults = valores confirmados 2.0TD). ✅ **Deuda #5 resuelta en F4**; la entrada de producción no cambia de comportamiento.
 
 ---
 
@@ -426,7 +429,7 @@ Peajes, cargos, impuestos y potencia contratada en `tarifa.py`. **Deuda #5 (F4)*
 | **F1 — Precios** | `ClienteOmie` + `ModeloTarifa` + `CoordinadorDatosOmie` + 5 sensores + config flow | ✅ **completada** (0.7.3) | Precios coinciden con OMIE; clasificación 2.0TD correcta; precio efectivo validado |
 | **F2 — Telemetría** | `ClienteSolarman` (preparado) + `MapaRegistros` + `registers.yaml` + `CoordinadorTelemetria` (`ha_entities` operativo) + `probe_registers` + **8 sensores** | ✅ **completada** (0.8.10) | SOC, potencia y temperaturas operativos; convención Deye confirmada; automatización del ventilador funcionando |
 | **F3 — Predicción v1 + Planner greedy** | `historico.py` + `predictor_consumo.py` (perfil + Solcast) + `planificador.py` (greedy) + `coordinador_plan.py` + 3 sensores + `switch.festivo_hoy` + servicio `regenerate_plan` | ✅ **completada** (0.9.0) | Plan diario plausible 1 semana en `dry_run` (revisión manual en curso) |
-| **F4 — Control** | `executor.py` con write-verify usando `solarman.write_*`, límite de escrituras, fallback y watchdog. **Bloqueo de hardware resuelto**. | 🚧 **en diseño** | 1 semana sin errores; escrituras verificadas |
+| **F4 — Control** | `executor.py` (`EscritorSolarman` + `EjecutorControl`) con write-verify, rate limiter, watchdog, guard dinámico, bloqueo por fallo, gradual, fallback, auditoría JSONL, `force_mode`/`release_manual`, `switch.control_activo` + 8 `number` + `sensor.estado_control`; deuda #5 resuelta | ✅ **completada** (0.10.0) | 1 semana sin errores con `control_activo=on` en gradual; solo carga en valle; escrituras verificadas contra la APP; **primera activación real pendiente del usuario** |
 | **F5 — ML + LP** | Forecaster ML + LP + banda p90 + auditoría + reentrenamiento | 🚧 pendiente | MAPE < 20 %; ahorro real medible |
 | **F6 — Pulido** | Dashboard, notificaciones, informes | 🚧 pendiente | 30 días sin intervención |
 
@@ -471,9 +474,12 @@ Peajes, cargos, impuestos y potencia contratada en `tarifa.py`. **Deuda #5 (F4)*
 - `test_planificador.py`: escenarios valle/punta, precio negativo, SOC 0/50/100, venta deshabilitada.
 - `test_predictor_consumo.py`: dataset sintético, backtesting con seed fija.
 
-### 10.4 F4 🚧 (planificados)
+### 10.4 F4 ✅ (implementados)
 
-- `test_executor.py`: simulación de escritura, write-verify, fallback.
+- `test_executor.py`: traducción de registros (direcciones del YAML), dry-run, gradual/completo, límites, write-verify OK/fallo/parcial, fallback, rate limiter, watchdog, guard 95 %/100 %, bloqueo por fallo, auditoría JSONL.
+- `test_force_mode.py`: aplicación inmediata, expiración solo en `until`, release manual, validaciones, salvaguardas respetadas.
+- `test_entidades_control.py`: switch, 8 numbers calientes con recálculo, sensor de estado, params del entry.
+- `test_tarifa_entry_data.py`: deuda #5.
 
 ---
 
@@ -501,8 +507,11 @@ optimizador-bateria-omie/
 │       ├── planificador.py          # F3: greedy
 │       ├── coordinador_plan.py      # F3: coordinator del plan
 │       ├── entidades_plan.py        # F3: sensores de plan y ahorro
-│       ├── switch.py                # F3: switch.festivo_hoy
-│       ├── services.py              # F2 + F3: probe_registers, regenerate_plan
+│       ├── executor.py              # F4: EscritorSolarman + EjecutorControl
+│       ├── entidades_control.py     # F4: switch.control_activo, 8 numbers, sensor estado
+│       ├── number.py                # F4: plataforma number
+│       ├── switch.py                # F3+F4: switch.festivo_hoy, switch.control_activo
+│       ├── services.py              # F2+F3+F4: probe, regenerate_plan, force_mode, release_manual
 │       ├── services.yaml            # F2 + F3
 │       ├── strings.json             # JSON puro (sin comentarios)
 │       ├── translations/
@@ -514,11 +523,8 @@ optimizador-bateria-omie/
 ├── hacs.json
 ├── README.md
 ├── SPEC.md                          # este documento
-└── docs/
-    ├── INSTALACION.md
-    ├── PLAN_F2.md                   # cerrado
-    ├── PLAN_F3.md                   # cerrado
-    └── RESULTADO_F2.md              # (a crear)
+├── PLAN_F2V1.3.md / PLAN_F3.md / PLAN_F4.md   # planes cerrados
+└── RESULTADO_F2.md / RESULTADO_F3.md / RESULTADO_F4.md   # resultados de fase
 ```
 
 **`manifest.json` final**:
@@ -531,9 +537,9 @@ optimizador-bateria-omie/
   "issue_tracker": "https://github.com/acarrilloa/optimizador-bateria-omie/issues",
   "codeowners": ["@acarrilloa"],
   "config_flow": true,
-  "version": "0.9.4",
+  "version": "0.10.0",
   "requirements": ["pysolarmanv5>=3.0.6,<4.0.0"],
-  "dependencies": ["omie"],
+  "dependencies": ["omie", "recorder"],
   "iot_class": "local_polling",
   "homeassistant": "2026.10.1",
   "license": "MIT"
@@ -542,7 +548,7 @@ optimizador-bateria-omie/
 
 **Paquetes**: solo `pysolarmanv5`. **NO** `voluptuous` ni `PyYAML` (vienen con HA Core).
 
-**Ficheros futuros** (F4+): `executor.py`.
+**Ficheros futuros** (F5+): `executor.py` ya existe (F4); F5 añadirá el forecaster ML y el LP sobre los módulos existentes.
 
 ---
 
@@ -576,7 +582,7 @@ optimizador-bateria-omie/
 | 2 | Backoff/timeout REData | F2 | ✅ **resuelta** |
 | 3 | Cliente directo `api.omie.es` (15 min) | F2 (opcional) | 🚧 condicionada |
 | 4 | `OptionsFlow` | ~~F3~~ → **absorbida por `reconfigure` en F2** | ✅ **resuelta** |
-| 5 | Mover tarifa a `entry.data` | **F4** (no hecha en F2) | pendiente |
+| 5 | Mover tarifa a `entry.data` | F4 | ✅ **resuelta** — `ConfiguracionTarifa.desde_entry` con defaults confirmados; `potencia_contratada` (W) única fuente |
 | 6 | Suite de tests F1 en CI | F2 | ✅ F1 + F2 + F3 en verde |
 | 7 | Log de ciclos con `tramos mañana` | F2 | ✅ **resuelta** |
 | 8 | Limpieza manual de entidades `_2` | Manual | pendiente (usuario) |

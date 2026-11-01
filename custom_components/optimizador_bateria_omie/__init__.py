@@ -31,6 +31,9 @@ from custom_components.optimizador_bateria_omie.coordinador import (
 from custom_components.optimizador_bateria_omie.coordinador_plan import (
     CoordinadorPlan,
 )
+from custom_components.optimizador_bateria_omie.executor import (
+    EjecutorControl,
+)
 from custom_components.optimizador_bateria_omie.historico import (
     FuenteHistoricoRecorder,
 )
@@ -61,7 +64,7 @@ from custom_components.optimizador_bateria_omie.telemetria import (
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = ["sensor", "switch"]
+PLATFORMS = ["sensor", "switch", "number"]
 
 
 def _cargar_plataformas() -> None:
@@ -169,6 +172,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
     await coordinador_plan.async_setup()
 
+    # ── F4: executor de control (vía servicios de Solarman) ──
+    # Con control_activo OFF (default) el executor solo simula: ninguna
+    # escritura real al inversor hasta que el usuario lo habilite.
+    ejecutor = EjecutorControl(
+        hass,
+        entry,
+        mapa,
+        coordinador_plan,
+        coordinador_telemetria,
+    )
+    await ejecutor.async_setup()
+
     hass.data[DOMAIN][entry.entry_id] = {
         "mapa": mapa,
         "gestor": gestor,
@@ -176,6 +191,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "coordinador_telemetria": coordinador_telemetria,
         "predictor": predictor,
         "coordinador_plan": coordinador_plan,
+        "executor": ejecutor,
     }
 
     async_setup_services(hass)
@@ -190,4 +206,6 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     datos = hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
     if datos and "coordinador_plan" in datos:
         await datos["coordinador_plan"].async_descargar()
+    if datos and "executor" in datos:
+        await datos["executor"].async_descargar()
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
