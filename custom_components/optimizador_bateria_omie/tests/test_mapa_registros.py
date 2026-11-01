@@ -45,6 +45,43 @@ familias:
       soc: { addr: 588, scale: 0.1, unit: "%" }
 """
 
+YAML_CONTROL_VALIDO = """\
+inverter: "deye-test"
+block_size: 16
+familias:
+  A:
+    probe:  { funcion: soc, addr: 588 }
+    telemetria:
+      soc: { addr: 588, scale: 0.1, unit: "%" }
+    control:
+      corriente_carga:     { addr: 210, min: 0, max: 135 }
+      habilitar_carga_red: { addr: 232, valores: [0, 1] }
+"""
+
+YAML_CONTROL_SIN_ADDR = """\
+inverter: "deye-test"
+block_size: 16
+familias:
+  A:
+    probe:  { funcion: soc, addr: 588 }
+    telemetria:
+      soc: { addr: 588, scale: 0.1, unit: "%" }
+    control:
+      corriente_carga: { min: 0, max: 135 }
+"""
+
+YAML_CONTROL_SIN_LIMITES = """\
+inverter: "deye-test"
+block_size: 16
+familias:
+  A:
+    probe:  { funcion: soc, addr: 588 }
+    telemetria:
+      soc: { addr: 588, scale: 0.1, unit: "%" }
+    control:
+      corriente_carga: { addr: 210 }
+"""
+
 
 @pytest.fixture
 def hass(tmp_path):
@@ -204,3 +241,58 @@ class TestConversion:
     def test_convertir_invertir_signo_sin_signed(self):
         params = {"scale": 1, "signed": False, "invertir_signo": True}
         assert MapaRegistros.convertir(100, params) == pytest.approx(-100.0)
+
+class TestControl:
+    """Sección 'control' (F4): acceso tipo='control' y validación."""
+
+    def test_parametros_control_empaquetado(self, mapa):
+        params = mapa.parametros("estandar", "corriente_carga_red", "control")
+        assert params["addr"] == 230
+        assert params["min"] == 0
+        assert params["max"] == 135
+        assert params["scale"] == 1
+        assert params["unit"] == "A"
+
+    def test_valores_permitidos(self, mapa):
+        params = mapa.parametros("estandar", "habilitar_carga_red", "control")
+        assert params["addr"] == 232
+        assert params["valores"] == [0, 1]
+
+    def test_direccion_control(self, mapa):
+        assert mapa.direccion("estandar", "corriente_carga", "control") == 210
+        assert mapa.direccion("estandar", "soc_minimo", "control") == 217
+        assert (
+            mapa.direccion("estandar", "soc_recuperacion", "control") == 218
+        )
+        # 218 > 217 (semántica Deye: recuperación > corte)
+        assert (
+            mapa.direccion("estandar", "soc_recuperacion", "control")
+            > mapa.direccion("estandar", "soc_minimo", "control")
+        )
+
+    def test_funcion_control_inexistente(self, mapa):
+        with pytest.raises(ErrorMapaRegistros, match="no definida"):
+            mapa.parametros("estandar", "potencia_imaginaria", "control")
+
+    def test_sin_seccion_control_no_rompe(self, hass, tmp_path):
+        """Una familia sin 'control' (mapa de solo telemetría) sigue OK."""
+        _escribir_override(tmp_path, YAML_VALIDO)
+        mapa = MapaRegistros(hass)
+        mapa.cargar()
+        assert "control" not in mapa._datos["familias"]["A"]
+
+    def test_control_valido_carga(self, hass, tmp_path):
+        _escribir_override(tmp_path, YAML_CONTROL_VALIDO)
+        mapa = MapaRegistros(hass)
+        mapa.cargar()
+        assert mapa.parametros("A", "corriente_carga", "control")["max"] == 135
+
+    def test_control_sin_addr_error(self, hass, tmp_path):
+        _escribir_override(tmp_path, YAML_CONTROL_SIN_ADDR)
+        with pytest.raises(ErrorMapaRegistros, match="sin 'addr'"):
+            MapaRegistros(hass).cargar()
+
+    def test_control_sin_limites_error(self, hass, tmp_path):
+        _escribir_override(tmp_path, YAML_CONTROL_SIN_LIMITES)
+        with pytest.raises(ErrorMapaRegistros, match="min/max ni valores"):
+            MapaRegistros(hass).cargar()

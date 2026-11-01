@@ -25,3 +25,18 @@ familias:
     # Dejamos el consumo y FV apuntando a sus direcciones estándar para probar.
       consumo_casa:   { addr: 178, scale: 1,    unit: "W", signed: true } # Load side Total power
       produccion_fv:  { addr: 186, scale: 1,    unit: "W" }               # PV1 input power (si hay más strings, se suman)
+    # ── Control (F4): usado por el Executor vía servicios de la integración Solarman ──
+    # 210 limita la carga de batería desde CUALQUIER fuente (PV + red): el Executor lo fija
+    # a la corriente equivalente a potencia_max_carga (valor constante entre tramos).
+    # 230/232 gobiernan SOLO la carga desde red. 217/218: soc_recuperacion > soc_minimo.
+    # Registros Deye de solo lectura relacionados (documentación, no escritura):
+    #   169  potencia total de red (W, signed; >0 = importación/compra)
+    #   424-425  medidor externo (convención OPUESTA: compra negativa) → normalizar a importación positiva
+    #   103-106  Fault information words 1-4 (F07-F64); 101-102 advertencias; 117-118 alarms
+    control:
+      corriente_carga:      { addr: 210, scale: 1, unit: "A", min: 0, max: 135 }
+      corriente_descarga:   { addr: 211, scale: 1, unit: "A", min: 0, max: 135 }
+      corriente_carga_red:  { addr: 230, scale: 1, unit: "A", min: 0, max: 135 }
+      habilitar_carga_red:  { addr: 232, valores: [0, 1] }
+      soc_minimo:           { addr: 217, scale: 1, unit: "%", min: 10, max: 100 }
+      soc_recuperacion:     { addr: 218, scale: 1, unit: "%", min: 10, max: 100 }

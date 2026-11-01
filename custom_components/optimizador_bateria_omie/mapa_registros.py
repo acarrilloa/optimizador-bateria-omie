@@ -134,6 +134,54 @@ class MapaRegistros:
                 raise ErrorMapaRegistros(
                     f"{ruta}: familia {familia} sin sección 'telemetria'"
                 )
+            control = contenido.get("control")
+            if control is not None:
+                self._validar_control(familia, control, ruta)
+
+    @staticmethod
+    def _validar_control(
+        familia: str, control: Any, ruta: Path
+    ) -> None:
+        """Valida la sección 'control' (F4) si existe.
+
+        Cada registro de control debe tener ``addr`` y, según su
+        naturaleza, ``min``/``max`` (rango válido de escritura) o
+        ``valores`` (valores permitidos). Nunca rompe la carga de la
+        telemetría si la sección no existe.
+        """
+        if not isinstance(control, dict) or not control:
+            raise ErrorMapaRegistros(
+                f"{ruta}: sección 'control' de {familia} mal formada"
+            )
+        for funcion, params in control.items():
+            if (
+                not isinstance(params, dict)
+                or not isinstance(params.get("addr"), int)
+            ):
+                raise ErrorMapaRegistros(
+                    f"{ruta}: control.{funcion} de {familia} sin 'addr'"
+                )
+            tiene_rango = "min" in params and "max" in params
+            tiene_valores = "valores" in params
+            if tiene_rango and not (
+                isinstance(params["min"], (int, float))
+                and isinstance(params["max"], (int, float))
+                and params["min"] <= params["max"]
+            ):
+                raise ErrorMapaRegistros(
+                    f"{ruta}: control.{funcion} de {familia} con "
+                    f"min/max no válidos"
+                )
+            if tiene_valores and not isinstance(params["valores"], list):
+                raise ErrorMapaRegistros(
+                    f"{ruta}: control.{funcion} de {familia} con "
+                    "'valores' que no es una lista"
+                )
+            if not tiene_rango and not tiene_valores:
+                raise ErrorMapaRegistros(
+                    f"{ruta}: control.{funcion} de {familia} sin "
+                    "min/max ni valores (límites de escritura obligatorios)"
+                )
 
     @property
     def inverter(self) -> str:
