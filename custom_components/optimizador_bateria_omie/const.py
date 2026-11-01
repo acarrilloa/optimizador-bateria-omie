@@ -92,6 +92,21 @@ DEFAULT_ENTITY_ID_PREVISION_FV_MANANA = (
 # Servicio del plan (F3)
 SERVICE_REGENERATE_PLAN = "regenerate_plan"
 
+# --- Control (F4) ---
+CONF_DEVICE_ID_SOLARMAN = "device_id_solarman"
+CONF_VOLTAJE_BATERIA_NOMINAL = "voltaje_bateria_nominal"
+CONF_SOC_RECUPERACION = "soc_recuperacion"
+
+DEFAULT_DEVICE_ID_SOLARMAN = ""
+DEFAULT_VOLTAJE_BATERIA_NOMINAL = 51.2
+DEFAULT_SOC_RECUPERACION = 20.0
+
+# Estados del sensor diagnóstico de control (F4, D12)
+ESTADO_CONTROL_INACTIVO = "inactivo"
+ESTADO_CONTROL_DRY_RUN = "dry_run"
+ESTADO_CONTROL_ACTIVO = "activo"
+ESTADO_CONTROL_FALLBACK_BLOQUEADO = "fallback_bloqueado"
+
 # --- Tarifa desde entry.data (F4, deuda #5) ---
 # Defaults = valores confirmados de la tarifa 2.0TD (antes hardcodeados en tarifa.py)
 CONF_PEAYE_ACCESO_PUNTA = "peaje_acceso_punta"
