@@ -29,6 +29,7 @@ from custom_components.optimizador_bateria_omie.coordinador import (
     CoordinadorDatosOmie,
 )
 from custom_components.optimizador_bateria_omie.planificador import (
+    ParametrosPlanner,
     Plan,
     PlanificadorGreedy,
     PlanTramo,
@@ -248,6 +249,10 @@ class CoordinadorPlan:
         if telemetria is not None:
             soc = telemetria.soc
 
+        # Recalcular los parámetros del planificador en cada recálculo:
+        # los number de F4 mutan entry.data en caliente (D16) y deben
+        # aplicar en ≤ 60 s sin recrear la entrada.
+        self.planificador.p = ParametrosPlanner.desde_entry(self.entry)
         plan = self.planificador.planificar(
             hoy,
             self._precios_efectivos(datos.precios_hoy) or [],

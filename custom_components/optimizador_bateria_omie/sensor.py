@@ -14,6 +14,9 @@ from custom_components.optimizador_bateria_omie.entidades import (
     SensorPrecioEstadisticas,
     SensorPreciosEfectivosHoy,
 )
+from custom_components.optimizador_bateria_omie.entidades_control import (
+    SensorEstadoControl,
+)
 from custom_components.optimizador_bateria_omie.entidades_plan import (
     SensorAhorroEstimadoHoy,
     SensorPlan,
@@ -71,5 +74,9 @@ async def async_setup_entry(
             SensorPlan(coordinador_plan),
             SensorAhorroEstimadoHoy(coordinador_plan),
         ])
+
+    # Sensor de estado de control (F4): reusa el EjecutorControl del setup
+    if "executor" in datos_dominio:
+        entidades.append(SensorEstadoControl(datos_dominio["executor"]))
 
     async_add_entities(entidades)

@@ -191,6 +191,18 @@ SENSOR_PLAN = f"{DOMAIN}_plan"
 SENSOR_AHORRO_ESTIMADO_HOY = f"{DOMAIN}_ahorro_estimado_hoy"
 SWITCH_FESTIVO_HOY = f"{DOMAIN}_festivo_hoy"
 
+# Unique IDs de F4 (control)
+SWITCH_CONTROL_ACTIVO = f"{DOMAIN}_control_activo"
+SENSOR_ESTADO_CONTROL = f"{DOMAIN}_estado_control"
+NUMBER_PRECIO_MAX_COMPRA = f"{DOMAIN}_precio_max_compra"
+NUMBER_PRECIO_MIN_VENTA = f"{DOMAIN}_precio_min_venta"
+NUMBER_MARGEN_ARBITRAJE = f"{DOMAIN}_margen_arbitraje"
+NUMBER_SOC_MIN = f"{DOMAIN}_soc_min"
+NUMBER_SOC_MAX = f"{DOMAIN}_soc_max"
+NUMBER_POTENCIA_MAX_CARGA = f"{DOMAIN}_potencia_max_carga"
+NUMBER_POTENCIA_MAX_DESCARGA = f"{DOMAIN}_potencia_max_descarga"
+NUMBER_EFICIENCIA_ROUND_TRIP = f"{DOMAIN}_eficiencia_round_trip"
+
 # Atributos
 ATTR_MIN = "min"
 ATTR_MAX = "max"
