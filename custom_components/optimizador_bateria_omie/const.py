@@ -96,10 +96,25 @@ SERVICE_REGENERATE_PLAN = "regenerate_plan"
 CONF_DEVICE_ID_SOLARMAN = "device_id_solarman"
 CONF_VOLTAJE_BATERIA_NOMINAL = "voltaje_bateria_nominal"
 CONF_SOC_RECUPERACION = "soc_recuperacion"
+CONF_LATENCIA_VERIFY_S = "latencia_verify_s"
+CONF_VERIFY_TOLERANCIA = "verify_tolerancia"
+CONF_MAX_ESCRITURAS_HORA = "max_escrituras_hora"
+CONF_ENTITY_ID_POTENCIA_RED = "entity_id_potencia_red"
+CONF_ENTITY_IDS_FALLO = "entity_ids_fallo"
 
 DEFAULT_DEVICE_ID_SOLARMAN = ""
 DEFAULT_VOLTAJE_BATERIA_NOMINAL = 51.2
 DEFAULT_SOC_RECUPERACION = 20.0
+DEFAULT_LATENCIA_VERIFY_S = 3
+DEFAULT_VERIFY_TOLERANCIA = 0
+DEFAULT_MAX_ESCRITURAS_HORA = 12
+
+# Umbrales del guard dinámico de potencia contratada (fracción)
+GUARD_REDUCCION = 0.95
+GUARD_CORTE = 1.0
+
+# Fallos de verify consecutivos que disparan el fallback
+FALLOS_VERIFY_FALLBACK = 3
 
 # Estados del sensor diagnóstico de control (F4, D12)
 ESTADO_CONTROL_INACTIVO = "inactivo"

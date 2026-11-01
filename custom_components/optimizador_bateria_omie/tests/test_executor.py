@@ -4,8 +4,8 @@ Sin hardware ni red: el escritor es un mock inyectado y las direcciones
 salen del registers.yaml empaquetado (nunca hardcodeadas).
 """
 
-from datetime import datetime
-from unittest.mock import AsyncMock, MagicMock
+from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -24,6 +24,9 @@ from custom_components.optimizador_bateria_omie.planificador import (
     ACCION_MANTENER,
     ACCION_VENTA_RED,
     PlanTramo,
+)
+from custom_components.optimizador_bateria_omie.telemetria import (
+    TelemetriaInversor,
 )
 
 HOY = datetime.now().astimezone().date()
@@ -63,24 +66,63 @@ def mapa(hass):
     return m
 
 
+@pytest.fixture(autouse=True)
+def _sin_espera_verify():
+    """El write-verify espera latencia_verify_s: sin esperas en tests."""
+    with patch(
+        "custom_components.optimizador_bateria_omie.executor.asyncio.sleep",
+        new_callable=AsyncMock,
+    ):
+        yield
+
+
 @pytest.fixture
 def escritor():
+    """Escritor fake: escribir registra el valor y leer lo devuelve."""
     w = MagicMock()
-    w.escribir = AsyncMock()
+    w._leidos: dict[int, int] = {}
+
+    async def _escribir(addr, valor):
+        w._leidos[addr] = valor
+
+    w.escribir = AsyncMock(side_effect=_escribir)
     w.escribir_bloque = AsyncMock()
-    w.leer = AsyncMock()
+    w.leer = AsyncMock(
+        side_effect=lambda addr, cantidad=1: [w._leidos.get(addr, 0)]
+    )
     return w
 
 
-def _coordinador_con_tramo(tramo):
+def _telemetria(
+    soc: float = 50.0,
+    edad_s: float = 0.0,
+    consumo: float = 300.0,
+    fv: float = 0.0,
+    pbat: float = 0.0,
+) -> TelemetriaInversor:
+    """Telemetría válida con ts_actualizacion reciente (watchdog OK)."""
+    return TelemetriaInversor(
+        soc=soc,
+        potencia_bateria=pbat,
+        corriente_bateria=0.0,
+        consumo_casa=consumo,
+        produccion_fv=fv,
+        temperatura_inversor=30.0,
+        temperatura_bateria=25.0,
+        ts_actualizacion=datetime.now(tz=UTC) - timedelta(seconds=edad_s),
+    )
+
+
+def _coordinador_con_tramo(tramo, telemetria=None):
     c = MagicMock()
     c.tramo_actual = MagicMock(return_value=tramo)
     c.async_registrar_callback = MagicMock(return_value=MagicMock())
+    c.data = telemetria if telemetria is not None else _telemetria()
     return c
 
 
 def _executor(
-    hass, mapa, escritor, tramo, entry_data=None
+    hass, mapa, escritor, tramo, entry_data=None, telemetria=None
 ) -> EjecutorControl:
     entry = MagicMock()
     entry.data = dict(entry_data or {})
@@ -88,8 +130,8 @@ def _executor(
         hass=hass,
         entry=entry,
         mapa=mapa,
-        coordinador_plan=_coordinador_con_tramo(tramo),
-        coordinador_telemetria=MagicMock(),
+        coordinador_plan=_coordinador_con_tramo(tramo, telemetria),
+        coordinador_telemetria=_coordinador_con_tramo(tramo, telemetria),
         escritor=escritor,
     )
 
@@ -425,3 +467,296 @@ class TestRegistroDeCallbacks:
         executor._notificar()
 
         callback.assert_called_once()
+
+
+class TestVerify:
+    """D5: write-verify OK / fallo (cuenta) / parcial (no cuenta)."""
+
+    @pytest.mark.asyncio
+    async def test_verify_ok(self, hass, mapa, escritor):
+        executor = _executor(hass, mapa, escritor, _tramo(ACCION_CARGA_RED))
+        executor._control_activo = True
+
+        await executor.async_aplicar_tramo("test")
+
+        assert executor._fallos_consecutivos == 0
+        # una relectura por escritura
+        assert escritor.leer.call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_verify_fallo_cuenta_y_resetea(self, hass, mapa, escritor):
+        """Valor leído distinto → fallo; una verify OK lo resetea."""
+        executor = _executor(hass, mapa, escritor, _tramo(ACCION_CARGA_RED))
+        executor._control_activo = True
+        await executor.async_aplicar_tramo("test")
+        assert executor._fallos_consecutivos == 0
+
+        # Nueva corriente objetivo: 230 pendiente; la relectura no coincide
+        executor.coordinador_plan.tramo_actual.return_value = _tramo(
+            ACCION_CARGA_RED, carga_red_w=1024.0
+        )
+        escritor.leer = AsyncMock(side_effect=lambda addr, cantidad=1: [-1])
+        await executor.async_aplicar_tramo("test")
+        assert executor._fallos_consecutivos == 1
+
+        # Verify OK en la siguiente pasada → contador a 0
+        escritor.leer = AsyncMock(
+            side_effect=lambda addr, cantidad=1: [
+                escritor._leidos.get(addr, 0)
+            ]
+        )
+        executor.coordinador_plan.tramo_actual.return_value = _tramo(
+            ACCION_CARGA_RED, carga_red_w=2048.0
+        )
+        await executor.async_aplicar_tramo("test")
+        assert executor._fallos_consecutivos == 0
+
+    @pytest.mark.asyncio
+    async def test_tres_fallos_consecutivos_fallback(
+        self, hass, mapa, escritor
+    ):
+        """3 verifies fallidos → fallback + valores seguros + OFF.
+
+        Una pasada de CARGA_RED escribe 3 registros: con las tres
+        relecturas devolviendo un valor distinto se alcanzan los 3
+        fallos consecutivos y se dispara el fallback.
+        """
+        executor = _executor(hass, mapa, escritor, _tramo(ACCION_CARGA_RED))
+        executor._control_activo = True
+        escritor.leer = AsyncMock(side_effect=lambda addr, cantidad=1: [-1])
+
+        await executor.async_aplicar_tramo("test")
+
+        assert executor.estado == "fallback_bloqueado"
+        assert executor.control_activo is False
+        # Valores seguros escritos (232=0, 230=0)
+        assert escritor._leidos[232] == 0
+        assert escritor._leidos[230] == 0
+        # Notificación persistente emitida
+        llamada = hass.services.async_call.call_args
+        assert llamada.args[0] == "persistent_notification"
+
+    @pytest.mark.asyncio
+    async def test_verify_parcial_no_cuenta_fallo(self, hass, mapa, escritor):
+        """Relectura con error de servicio → parcial, sin contar fallo."""
+        executor = _executor(hass, mapa, escritor, _tramo(ACCION_CARGA_RED))
+        executor._control_activo = True
+        escritor.leer = AsyncMock(
+            side_effect=ErrorEscrituraSolarman("timeout de relectura")
+        )
+
+        await executor.async_aplicar_tramo("test")
+
+        assert executor._fallos_consecutivos == 0
+        assert executor.estado == "activo"
+
+
+class TestRateLimiter:
+    """D6: máximo de escrituras reales por hora."""
+
+    @pytest.mark.asyncio
+    async def test_limite_superado_aplaza(self, hass, mapa, escritor):
+        executor = _executor(
+            hass,
+            mapa,
+            escritor,
+            _tramo(ACCION_CARGA_RED),
+            entry_data={"max_escrituras_hora": 4},
+        )
+        executor._control_activo = True
+
+        # Primera pasada: 3 escrituras (210, 230, 232)
+        await executor.async_aplicar_tramo("test")
+        assert escritor.escribir.call_count == 3
+
+        # Nueva corriente de red: 1 escritura más → 4/4
+        executor.coordinador_plan.tramo_actual.return_value = _tramo(
+            ACCION_CARGA_RED, carga_red_w=1024.0
+        )
+        await executor.async_aplicar_tramo("test")
+        assert escritor.escribir.call_count == 4
+
+        # La quinta supera el límite: aplazado, sin escritura
+        executor.coordinador_plan.tramo_actual.return_value = _tramo(
+            ACCION_CARGA_RED, carga_red_w=2048.0
+        )
+        await executor.async_aplicar_tramo("test")
+        assert escritor.escribir.call_count == 4
+        assert executor.estado_detalle["escrituras_ultima_hora"] == 4
+
+
+class TestWatchdog:
+    """D7: telemetría obsoleta / plan ausente → no escribir."""
+
+    @pytest.mark.asyncio
+    async def test_telemetria_obsoleta_no_escribe(self, hass, mapa, escritor):
+        executor = _executor(
+            hass,
+            mapa,
+            escritor,
+            _tramo(ACCION_CARGA_RED),
+            telemetria=_telemetria(edad_s=120.0),  # > 2 × 30 s
+        )
+        executor._control_activo = True
+
+        await executor.async_aplicar_tramo("test")
+
+        escritor.escribir.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_telemetria_obsoleta_con_carga_activa_fallback(
+        self, hass, mapa, escritor
+    ):
+        executor = _executor(hass, mapa, escritor, _tramo(ACCION_CARGA_RED))
+        executor._control_activo = True
+        # Aplicamos carga desde red...
+        await executor.async_aplicar_tramo("test")
+        assert escritor._leidos[232] == 1
+
+        # ...y luego la telemetría queda obsoleta
+        executor.coordinador_telemetria.data = _telemetria(edad_s=120.0)
+        await executor.async_aplicar_tramo("test")
+
+        assert executor.estado == "fallback_bloqueado"
+        assert escritor._leidos[232] == 0  # valores seguros
+        assert escritor._leidos[230] == 0
+
+    @pytest.mark.asyncio
+    async def test_plan_ausente_con_carga_activa_fallback(
+        self, hass, mapa, escritor
+    ):
+        executor = _executor(hass, mapa, escritor, _tramo(ACCION_CARGA_RED))
+        executor._control_activo = True
+        await executor.async_aplicar_tramo("test")
+
+        executor.coordinador_plan.tramo_actual.return_value = None
+        await executor.async_aplicar_tramo("test")
+
+        assert executor.estado == "fallback_bloqueado"
+        assert escritor._leidos[232] == 0
+
+
+class TestGuardPotencia:
+    """D9: guard dinámico al 95 % y al 100 % de la contratada."""
+
+    def _estado_red(self, hass, valor: str):
+        estado = MagicMock()
+        estado.state = valor
+        hass.states.get = MagicMock(return_value=estado)
+        return hass
+
+    @pytest.mark.asyncio
+    async def test_guard_95_reduce_corriente(self, hass, mapa, escritor):
+        # 5700 W de 5750 W → 99,1 % > 95 %: margen 0,95×5750−5700 = −225 W
+        self._estado_red(hass, "5700")
+        executor = _executor(
+            hass,
+            mapa,
+            escritor,
+            _tramo(ACCION_CARGA_RED, carga_red_w=4096.0),
+            entry_data={"entity_id_potencia_red": "sensor.red"},
+        )
+        executor._control_activo = True
+
+        await executor.async_aplicar_tramo("test")
+
+        # margen negativo → corriente reducida a 0
+        assert escritor._leidos[230] == 0
+
+    @pytest.mark.asyncio
+    async def test_guard_100_corte_inmediato(self, hass, mapa, escritor):
+        self._estado_red(hass, "6000")  # ≥ 100 % de 5750
+        executor = _executor(
+            hass,
+            mapa,
+            escritor,
+            _tramo(ACCION_CARGA_RED, carga_red_w=4096.0),
+            entry_data={"entity_id_potencia_red": "sensor.red"},
+        )
+        executor._control_activo = True
+
+        await executor.async_aplicar_tramo("test")
+
+        assert escritor._leidos[230] == 0
+        assert escritor._leidos[232] == 0
+
+    @pytest.mark.asyncio
+    async def test_guard_derivado_sin_entidad(self, hass, mapa, escritor):
+        """Sin entity_id: importación derivada consumo − FV − pbat."""
+        hass.states.get = MagicMock(return_value=None)
+        executor = _executor(
+            hass,
+            mapa,
+            escritor,
+            _tramo(ACCION_CARGA_RED, carga_red_w=4096.0),
+            telemetria=_telemetria(consumo=5700.0, fv=0.0, pbat=0.0),
+        )
+        executor._control_activo = True
+
+        await executor.async_aplicar_tramo("test")
+
+        assert escritor._leidos[230] == 0
+
+    @pytest.mark.asyncio
+    async def test_guard_normal_no_interfiere(self, hass, mapa, escritor):
+        self._estado_red(hass, "2000")  # 35 % de la contratada
+        executor = _executor(
+            hass,
+            mapa,
+            escritor,
+            _tramo(ACCION_CARGA_RED, carga_red_w=4096.0),
+            entry_data={"entity_id_potencia_red": "sensor.red"},
+        )
+        executor._control_activo = True
+
+        await executor.async_aplicar_tramo("test")
+
+        assert escritor._leidos[230] == round(4096.0 / VOLTAJE)
+
+
+class TestBloqueoFallo:
+    """D10: registros Deye 103-106 ≠ 0 → sin escrituras."""
+
+    @pytest.mark.asyncio
+    async def test_fallo_activo_bloquea(self, hass, mapa, escritor):
+        estado = MagicMock()
+        estado.state = "1"
+        hass.states.get = MagicMock(return_value=estado)
+        executor = _executor(
+            hass,
+            mapa,
+            escritor,
+            _tramo(ACCION_CARGA_RED),
+            entry_data={"entity_ids_fallo": "sensor.fault1, sensor.fault2"},
+        )
+        executor._control_activo = True
+
+        await executor.async_aplicar_tramo("test")
+
+        escritor.escribir.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_fallo_con_carga_activa_fallback(self, hass, mapa, escritor):
+        executor = _executor(hass, mapa, escritor, _tramo(ACCION_CARGA_RED))
+        executor._control_activo = True
+        await executor.async_aplicar_tramo("test")
+        assert escritor._leidos[232] == 1
+
+        estado = MagicMock()
+        estado.state = "7"
+        hass.states.get = MagicMock(return_value=estado)
+        executor.entry.data["entity_ids_fallo"] = "sensor.fault1"
+        await executor.async_aplicar_tramo("test")
+
+        assert executor.estado == "fallback_bloqueado"
+        assert escritor._leidos[232] == 0
+
+    def test_lista_vacia_aviso_una_vez(self, hass, mapa, escritor, caplog):
+        executor = _executor(hass, mapa, escritor, _tramo(ACCION_MANTENER))
+
+        with caplog.at_level("WARNING"):
+            assert executor._fallo_activo() is False
+            assert executor._fallo_activo() is False
+
+        assert caplog.text.count("INACTIVO") == 1  # aviso una sola vez
+

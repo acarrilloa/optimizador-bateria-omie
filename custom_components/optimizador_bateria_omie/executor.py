@@ -15,8 +15,10 @@ de un tramo) para no estrangular la carga solar.
 """
 # versión 0.10.0
 
+import asyncio
 import logging
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -25,18 +27,30 @@ from homeassistant.exceptions import HomeAssistantError
 
 from custom_components.optimizador_bateria_omie.const import (
     CONF_DEVICE_ID_SOLARMAN,
+    CONF_ENTITY_ID_POTENCIA_RED,
+    CONF_ENTITY_IDS_FALLO,
+    CONF_LATENCIA_VERIFY_S,
+    CONF_MAX_ESCRITURAS_HORA,
+    CONF_POTENCIA_CONTRATADA,
     CONF_POTENCIA_MAX_CARGA,
     CONF_SOC_MIN,
     CONF_SOC_RECUPERACION,
+    CONF_VERIFY_TOLERANCIA,
     CONF_VOLTAJE_BATERIA_NOMINAL,
     DEFAULT_DEVICE_ID_SOLARMAN,
+    DEFAULT_LATENCIA_VERIFY_S,
+    DEFAULT_MAX_ESCRITURAS_HORA,
     DEFAULT_SOC_MIN,
     DEFAULT_SOC_RECUPERACION,
+    DEFAULT_VERIFY_TOLERANCIA,
     DEFAULT_VOLTAJE_BATERIA_NOMINAL,
     DOMAIN,
     ESTADO_CONTROL_ACTIVO,
     ESTADO_CONTROL_FALLBACK_BLOQUEADO,
     ESTADO_CONTROL_INACTIVO,
+    FALLOS_VERIFY_FALLBACK,
+    GUARD_CORTE,
+    GUARD_REDUCCION,
 )
 from custom_components.optimizador_bateria_omie.coordinador_plan import (
     CoordinadorPlan,
@@ -221,6 +235,9 @@ class EjecutorControl:
         self._estado = ESTADO_CONTROL_INACTIVO
         self._motivo_estado = "arranque"
         self._ultimo_aplicado: dict[int, int] = {}
+        self._escrituras_ts: list[datetime] = []
+        self._fallos_consecutivos = 0
+        self._aviso_fallo_emitido = False
         self._listeners: list[Callable[[], None]] = []
         self._cancelar_plan: Callable[[], None] | None = None
 
@@ -366,17 +383,195 @@ class EjecutorControl:
             if self._ultimo_aplicado.get(addr) != valor
         }
 
+    # ─── Salvaguardas (U4) ───
+
+    def _carga_activa(self) -> bool:
+        """Hay carga desde red aplicada (232=1 o 230>0)."""
+        addr_red = self.mapa.direccion(
+            "estandar", "corriente_carga_red", "control"
+        )
+        addr_habilitar = self.mapa.direccion(
+            "estandar", "habilitar_carga_red", "control"
+        )
+        return (
+            self._ultimo_aplicado.get(addr_habilitar) == 1
+            or self._ultimo_aplicado.get(addr_red, 0) > 0
+        )
+
+    def _telemetria_fresca(self) -> bool:
+        """Telemetría no obsoleta: ts < 2 × intervalo (watchdog D7)."""
+        telemetria = self.coordinador_telemetria.data
+        if telemetria is None or telemetria.soc is None:
+            return False
+        intervalo = float(
+            self._param("intervalo_telemetria_s", 30)
+        )
+        edad = (
+            datetime.now(tz=UTC) - telemetria.ts_actualizacion
+        ).total_seconds()
+        if edad > 2 * intervalo:
+            _LOGGER.warning(
+                "Watchdog: telemetría obsoleta (%.0f s > %.0f s); "
+                "no se escribe",
+                edad,
+                2 * intervalo,
+            )
+            return False
+        return True
+
+    def _entity_ids_fallo(self) -> list[str]:
+        """Lista de entity_ids de fallo (texto separado por comas)."""
+        valor = self._param(CONF_ENTITY_IDS_FALLO, "")
+        if isinstance(valor, list):
+            return [str(v).strip() for v in valor if str(v).strip()]
+        return [
+            parte.strip()
+            for parte in str(valor).split(",")
+            if parte.strip()
+        ]
+
+    def _fallo_activo(self) -> bool:
+        """Algún registro de fallo (Deye 103-106) es ≠ 0 (D10)."""
+        entity_ids = self._entity_ids_fallo()
+        if not entity_ids:
+            if not self._aviso_fallo_emitido:
+                self._aviso_fallo_emitido = True
+                _LOGGER.warning(
+                    "entity_ids_fallo sin configurar: el bloqueo de "
+                    "escrituras por fallo del inversor queda INACTIVO"
+                )
+            return False
+        for entity_id in entity_ids:
+            estado = self.hass.states.get(entity_id)
+            if estado is None or estado.state in ("unknown", "unavailable"):
+                continue
+            try:
+                if float(estado.state) != 0:
+                    _LOGGER.warning(
+                        "Fallo activo del inversor en %s: %s → "
+                        "escrituras bloqueadas",
+                        entity_id,
+                        estado.state,
+                    )
+                    return True
+            except (TypeError, ValueError):
+                _LOGGER.warning(
+                    "Estado no numérico en la entidad de fallo %s: %r "
+                    "(se ignora)",
+                    entity_id,
+                    estado.state,
+                )
+        return False
+
+    def _importacion_red_w(self) -> float | None:
+        """Importación de red normalizada a positiva (D9).
+
+        Fuente preferente: ``entity_id_potencia_red`` (registro Deye 169:
+        >0 = importación). Sin entidad: cálculo derivado desde telemetría
+        ``consumo_casa − produccion_fv − potencia_bateria`` (convención
+        Deye +descarga/−carga). OJO: los registros 424-425 (medidor
+        externo) usan la convención OPUESTA (compra negativa): si se
+        apunta a ellos, invertir el signo antes de configurar.
+        """
+        entity_id = self._param(CONF_ENTITY_ID_POTENCIA_RED, "")
+        if entity_id:
+            estado = self.hass.states.get(entity_id)
+            if estado is None or estado.state in ("unknown", "unavailable"):
+                return None
+            try:
+                return max(0.0, float(estado.state))
+            except (TypeError, ValueError):
+                _LOGGER.warning(
+                    "Estado no numérico en %s: %r", entity_id, estado.state
+                )
+                return None
+        telemetria = self.coordinador_telemetria.data
+        if (
+            telemetria is None
+            or telemetria.consumo_casa is None
+            or telemetria.produccion_fv is None
+            or telemetria.potencia_bateria is None
+        ):
+            return None
+        return max(
+            0.0,
+            telemetria.consumo_casa
+            - telemetria.produccion_fv
+            - telemetria.potencia_bateria,
+        )
+
+    def _aplicar_guard(self, objetivos: dict[int, int]) -> dict[int, int]:
+        """Guard dinámico de potencia contratada (D9, RF-04).
+
+        Importación > 95 % → recorta la corriente de carga desde red al
+        margen restante; ≥ 100 % → 0 A inmediato (solo valores seguros).
+        Sin dato de importación disponible, los objetivos quedan intactos
+        (no se inventa; el guard del plan ya limita la potencia).
+        """
+        importacion = self._importacion_red_w()
+        if importacion is None:
+            return objetivos
+        contratada = float(self._param(CONF_POTENCIA_CONTRATADA, 5750.0))
+        fraccion = importacion / contratada
+        if fraccion < GUARD_REDUCCION:
+            return objetivos
+        addr_red = self.mapa.direccion(
+            "estandar", "corriente_carga_red", "control"
+        )
+        addr_habilitar = self.mapa.direccion(
+            "estandar", "habilitar_carga_red", "control"
+        )
+        if fraccion >= GUARD_CORTE:
+            _LOGGER.warning(
+                "Guard: importación %.0f W ≥ %.0f W contratados → "
+                "corriente de carga desde red a 0",
+                importacion,
+                contratada,
+            )
+            return {
+                **objetivos,
+                addr_red: 0,
+                addr_habilitar: 0,
+            }
+        margen_w = contratada * GUARD_REDUCCION - importacion
+        reducida = self._recortar_corriente(
+            "corriente_carga_red", margen_w / self._voltaje_nominal()
+        )
+        _LOGGER.warning(
+            "Guard: importación al %.0f %% de la contratada → "
+            "corriente de carga desde red reducida a %d A",
+            fraccion * 100,
+            reducida,
+        )
+        return {**objetivos, addr_red: min(objetivos.get(addr_red, 0), reducida)}
+
+    def _escrituras_ultima_hora(self) -> int:
+        """Escrituras reales en la ventana deslizante de 1 h (D6)."""
+        ahora = datetime.now(tz=UTC)
+        self._escrituras_ts = [
+            ts
+            for ts in self._escrituras_ts
+            if (ahora - ts).total_seconds() <= 3600
+        ]
+        return len(self._escrituras_ts)
+
     # ─── Ejecución de tramo ───
 
     async def async_aplicar_tramo(self, motivo: str) -> None:
         """Traduce y aplica el tramo actual (o el modo manual).
 
         Con ``control_activo`` OFF todo queda **simulado**: se traduce y
-        se loguea, pero nunca se invoca un servicio de escritura.
+        se loguea, pero nunca se invoca un servicio de escritura. Con ON,
+        el pipeline aplica las salvaguardas: watchdog (D7), fallo (D10),
+        guard (D9), idempotencia (D8), rate limiter (D6) y write-verify
+        (D5) con fallback tras 3 fallos consecutivos.
         """
         tramo = self.coordinador_plan.tramo_actual()
         if tramo is None:
+            # Watchdog: plan ausente → no escribir; carga activa → fallback
             self._motivo_estado = f"sin tramo de plan ({motivo})"
+            if self._control_activo and self._carga_activa():
+                await self._async_fallback("plan ausente")
             self._notificar()
             return
 
@@ -395,17 +590,135 @@ class EjecutorControl:
             self._actualizar_estado()
             return
 
+        # Watchdog: telemetría obsoleta o sin SOC → no escribir
+        if not self._telemetria_fresca():
+            if self._carga_activa():
+                await self._async_fallback("telemetría obsoleta")
+            self._actualizar_estado()
+            return
+        # Bloqueo por fallo del inversor (D10)
+        if self._fallo_activo():
+            if self._carga_activa():
+                await self._async_fallback("fallo del inversor")
+            self._actualizar_estado()
+            return
+
+        # Guard dinámico de potencia contratada (D9)
+        objetivos = self._aplicar_guard(objetivos)
         pendientes = self._filtrar_idempotente(objetivos)
         if not pendientes:
             self._actualizar_estado()
             return
+
+        # Rate limiter (D6)
+        maximo = int(self._param(CONF_MAX_ESCRITURAS_HORA,
+                                 DEFAULT_MAX_ESCRITURAS_HORA))
+        if self._escrituras_ultima_hora() + len(pendientes) > maximo:
+            _LOGGER.warning(
+                "Rate limiter: %d escrituras en la última hora "
+                "(máx %d); aplazado al siguiente tramo",
+                self._escrituras_ultima_hora(),
+                maximo,
+            )
+            self._actualizar_estado()
+            return
+
         _LOGGER.info(
             "Aplicando %s (%s): %s", tramo.accion, motivo, pendientes
         )
         for addr, valor in pendientes.items():
             await self._escritor.escribir(addr, valor)
+            self._escrituras_ts.append(datetime.now(tz=UTC))
+            verificado = await self._verificar(addr, valor)
+            if verificado == "fallo":
+                self._fallos_consecutivos += 1
+                if self._fallos_consecutivos >= FALLOS_VERIFY_FALLBACK:
+                    await self._async_fallback(
+                        f"verify fallido {self._fallos_consecutivos} "
+                        "veces consecutivas"
+                    )
+                    return
+            elif verificado == "ok":
+                self._fallos_consecutivos = 0
+            # "parcial" (relectura con error de servicio) no cuenta (D5)
             self._ultimo_aplicado[addr] = valor
         self._actualizar_estado()
+
+    async def _verificar(self, addr: int, valor: int) -> str:
+        """Write-verify: relectura tras la latencia del datalogger.
+
+        Devuelve ``"ok"`` (valor coincide con tolerancia), ``"fallo"``
+        (valor distinto; cuenta para el fallback) o ``"parcial"`` (la
+        relectura falló por error del servicio; verify soft, no cuenta).
+        """
+        latencia = float(
+            self._param(CONF_LATENCIA_VERIFY_S, DEFAULT_LATENCIA_VERIFY_S)
+        )
+        tolerancia = int(
+            self._param(CONF_VERIFY_TOLERANCIA, DEFAULT_VERIFY_TOLERANCIA)
+        )
+        await asyncio.sleep(latencia)
+        try:
+            leido = (await self._escritor.leer(addr, 1))[0]
+        except ErrorEscrituraSolarman as err:
+            _LOGGER.warning(
+                "Verify parcial en %d: relectura falló (%s)", addr, err
+            )
+            return "parcial"
+        if abs(leido - valor) <= tolerancia:
+            return "ok"
+        _LOGGER.warning(
+            "Verify fallido en %d: escrito %d, leído %d", addr, valor, leido
+        )
+        return "fallo"
+
+    async def _async_fallback(self, motivo: str) -> None:
+        """Fallback (D5): valores seguros AUTOCONSUMO + bloqueo manual.
+
+        Escribe 232=0 y 230=0 (direcciones del YAML), NO sujeto al rate
+        limiter, apaga ``control_activo`` y emite una notificación
+        persistente. Reactivación solo manual (encender el switch).
+        """
+        _LOGGER.error("FALLBACK: %s", motivo)
+        self._estado = ESTADO_CONTROL_FALLBACK_BLOQUEADO
+        addr_red = self.mapa.direccion(
+            "estandar", "corriente_carga_red", "control"
+        )
+        addr_habilitar = self.mapa.direccion(
+            "estandar", "habilitar_carga_red", "control"
+        )
+        try:
+            await self._escritor.escribir(addr_habilitar, 0)
+            await self._escritor.escribir(addr_red, 0)
+            self._ultimo_aplicado[addr_habilitar] = 0
+            self._ultimo_aplicado[addr_red] = 0
+        except ErrorEscrituraSolarman as err:
+            _LOGGER.error(
+                "Fallback: no se pudieron escribir los valores seguros "
+                "(%s). Revisa el inversor manualmente AHORA",
+                err,
+            )
+        self._control_activo = False
+        self._fallos_consecutivos = 0
+        try:
+            await self.hass.services.async_call(
+                "persistent_notification",
+                "create",
+                {
+                    "title": "Optimizador Batería OMIE: fallback",
+                    "message": (
+                        f"Escrituras bloqueadas ({motivo}). Se han "
+                        "aplicado valores seguros (carga desde red a 0). "
+                        "Revisa el inversor y vuelve a encender "
+                        "control_activo para reactivar."
+                    ),
+                    "notification_id": f"{DOMAIN}_fallback",
+                },
+                blocking=True,
+            )
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("No se pudo emitir la notificación: %s", err)
+        self._notificar()
 
     # ─── Control activo ───
 
@@ -480,6 +793,8 @@ class EjecutorControl:
         return {
             "motivo": self._motivo_estado,
             "control_activo": self._control_activo,
+            "fallos_consecutivos": self._fallos_consecutivos,
+            "escrituras_ultima_hora": self._escrituras_ultima_hora(),
             "ultimo_aplicado": dict(self._ultimo_aplicado),
             "ruta_auditoria": str(self._ruta_auditoria()),
         }
