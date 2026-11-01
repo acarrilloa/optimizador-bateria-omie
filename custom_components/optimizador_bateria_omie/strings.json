@@ -37,7 +37,25 @@
           "festivos_locales": "Festivos locales (MM-DD separados por comas)",
           "capacidad_bateria_kwh": "Capacidad de batería (kWh)",
           "entity_id_prevision_fv_hoy": "Entidad Solcast previsión FV hoy",
-          "entity_id_prevision_fv_manana": "Entidad Solcast previsión FV mañana"
+          "entity_id_prevision_fv_manana": "Entidad Solcast previsión FV mañana",
+          "modo_activacion": "Modo de activación",
+          "max_escrituras_hora": "Máximo de escrituras por hora",
+          "latencia_verify_s": "Latencia de verificación (s)",
+          "verify_tolerancia": "Tolerancia de verificación",
+          "voltaje_bateria_nominal": "Tensión nominal de batería (V)",
+          "soc_recuperacion": "SOC de recuperación (%)",
+          "entity_id_potencia_red": "Entidad potencia de red (W, registro 169)",
+          "entity_ids_fallo": "Entidades de fallo del inversor (separadas por comas)",
+          "device_id_solarman": "Device ID de la integración Solarman",
+          "peaje_acceso_punta": "Peaje de acceso punta (€/kWh)",
+          "peaje_acceso_llano": "Peaje de acceso llano (€/kWh)",
+          "peaje_acceso_valle": "Peaje de acceso valle (€/kWh)",
+          "cargo_sistema_punta": "Cargo de sistema punta (€/kWh)",
+          "cargo_sistema_llano": "Cargo de sistema llano (€/kWh)",
+          "cargo_sistema_valle": "Cargo de sistema valle (€/kWh)",
+          "impuesto_electrico_pct": "Impuesto eléctrico (%)",
+          "iva_pct": "IVA (%)",
+          "aplicar_impuestos_precio": "Aplicar impuestos al precio"
         }
       },
       "reconfigure": {
@@ -76,7 +94,25 @@
           "festivos_locales": "Festivos locales (MM-DD separados por comas)",
           "capacidad_bateria_kwh": "Capacidad de batería (kWh)",
           "entity_id_prevision_fv_hoy": "Entidad Solcast previsión FV hoy",
-          "entity_id_prevision_fv_manana": "Entidad Solcast previsión FV mañana"
+          "entity_id_prevision_fv_manana": "Entidad Solcast previsión FV mañana",
+          "modo_activacion": "Modo de activación",
+          "max_escrituras_hora": "Máximo de escrituras por hora",
+          "latencia_verify_s": "Latencia de verificación (s)",
+          "verify_tolerancia": "Tolerancia de verificación",
+          "voltaje_bateria_nominal": "Tensión nominal de batería (V)",
+          "soc_recuperacion": "SOC de recuperación (%)",
+          "entity_id_potencia_red": "Entidad potencia de red (W, registro 169)",
+          "entity_ids_fallo": "Entidades de fallo del inversor (separadas por comas)",
+          "device_id_solarman": "Device ID de la integración Solarman",
+          "peaje_acceso_punta": "Peaje de acceso punta (€/kWh)",
+          "peaje_acceso_llano": "Peaje de acceso llano (€/kWh)",
+          "peaje_acceso_valle": "Peaje de acceso valle (€/kWh)",
+          "cargo_sistema_punta": "Cargo de sistema punta (€/kWh)",
+          "cargo_sistema_llano": "Cargo de sistema llano (€/kWh)",
+          "cargo_sistema_valle": "Cargo de sistema valle (€/kWh)",
+          "impuesto_electrico_pct": "Impuesto eléctrico (%)",
+          "iva_pct": "IVA (%)",
+          "aplicar_impuestos_precio": "Aplicar impuestos al precio"
         }
       }
     },

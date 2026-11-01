@@ -151,3 +151,76 @@ class TestReconfigureF3:
         # add_suggested_values_to_schema recibe festivos formateados
         schema_arg = flow.add_suggested_values_to_schema.call_args[0][1]
         assert schema_arg[CONF_FESTIVOS_LOCALES] == "10-20"
+
+
+class TestSchemaF4:
+    """Campos de control (F4) con defaults; entrada de producción intacta."""
+
+    def test_defaults_f4(self):
+        datos = CONFIG_SCHEMA(dict(ENTRADA_F2))
+
+        assert datos["modo_activacion"] == "gradual"
+        assert datos["max_escrituras_hora"] == 12
+        assert datos["latencia_verify_s"] == 3
+        assert datos["verify_tolerancia"] == 0
+        assert datos["voltaje_bateria_nominal"] == 51.2
+        assert datos["soc_recuperacion"] == 20.0
+        assert datos["entity_id_potencia_red"] == ""
+        assert datos["entity_ids_fallo"] == ""
+        assert datos["device_id_solarman"] == ""
+        # tarifa (deuda #5) con los valores confirmados
+        assert datos["peaje_acceso_punta"] == 0.033261
+        assert datos["cargo_sistema_valle"] == 0.003215
+        assert datos["impuesto_electrico_pct"] == 0.051127
+        assert datos["iva_pct"] == 0.21
+        assert datos["aplicar_impuestos_precio"] is True
+
+    def test_rangos_f4(self):
+        with pytest.raises(vol.Invalid):
+            CONFIG_SCHEMA({**ENTRADA_F2, "max_escrituras_hora": 60})
+        with pytest.raises(vol.Invalid):
+            CONFIG_SCHEMA({**ENTRADA_F2, "latencia_verify_s": 0})
+        with pytest.raises(vol.Invalid):
+            CONFIG_SCHEMA({**ENTRADA_F2, "voltaje_bateria_nominal": 70})
+        with pytest.raises(vol.Invalid):
+            CONFIG_SCHEMA({**ENTRADA_F2, "modo_activacion": "rapido"})
+
+    def test_validacion_218_mayor_217(self):
+        """Corrección 2: soc_recuperacion > soc_min o vol.Invalid."""
+        from custom_components.optimizador_bateria_omie.config_flow import (
+            validar_soc_recuperacion,
+        )
+
+        datos = CONFIG_SCHEMA(
+            {**ENTRADA_F2, "soc_min": 15, "soc_recuperacion": 10}
+        )
+        with pytest.raises(vol.Invalid, match="recuperación > corte"):
+            validar_soc_recuperacion(datos)
+
+        datos["soc_recuperacion"] = 16
+        assert validar_soc_recuperacion(datos) == datos
+
+
+class TestReconfigureF4:
+    @pytest.mark.asyncio
+    async def test_entity_ids_fallo_se_persiste_como_lista(self):
+        flow = _flow_con_entry(ENTRADA_F2)
+
+        await flow.async_step_reconfigure(
+            {**ENTRADA_F2, "entity_ids_fallo": "sensor.f1, sensor.f2"}
+        )
+
+        _, kwargs = flow.async_update_reload_and_abort.call_args
+        guardados = kwargs["data_updates"]
+        assert guardados["entity_ids_fallo"] == ["sensor.f1", "sensor.f2"]
+
+    @pytest.mark.asyncio
+    async def test_form_formatea_entity_ids_fallo(self):
+        flow = _flow_con_entry(
+            {**ENTRADA_F2, "entity_ids_fallo": ["sensor.f1"]}
+        )
+
+        await flow.async_step_reconfigure(None)
+
+        sugeridos = flow.add_suggested_values_to_schema.call_args[0][1]
+        assert sugeridos["entity_ids_fallo"] == "sensor.f1"
