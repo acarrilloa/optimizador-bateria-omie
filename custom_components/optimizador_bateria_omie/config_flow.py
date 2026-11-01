@@ -1,5 +1,5 @@
 """Flujo de configuración para la integración Optimizador Batería OMIE."""
-# versión 0.9.0
+# versión 0.10.0
 
 from typing import Any
 
