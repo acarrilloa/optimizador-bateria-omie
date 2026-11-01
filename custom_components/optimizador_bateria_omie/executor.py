@@ -26,6 +26,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 
 from custom_components.optimizador_bateria_omie.const import (
+    ACCIONES_MANUALES,
     CONF_DEVICE_ID_SOLARMAN,
     CONF_ENTITY_ID_POTENCIA_RED,
     CONF_ENTITY_IDS_FALLO,
@@ -34,6 +35,7 @@ from custom_components.optimizador_bateria_omie.const import (
     CONF_MODO_ACTIVACION,
     CONF_POTENCIA_CONTRATADA,
     CONF_POTENCIA_MAX_CARGA,
+    CONF_POTENCIA_MAX_DESCARGA,
     CONF_SOC_MIN,
     CONF_SOC_RECUPERACION,
     CONF_VERIFY_TOLERANCIA,
@@ -42,6 +44,7 @@ from custom_components.optimizador_bateria_omie.const import (
     DEFAULT_LATENCIA_VERIFY_S,
     DEFAULT_MAX_ESCRITURAS_HORA,
     DEFAULT_MODO_ACTIVACION,
+    DEFAULT_POTENCIA_MAX_DESCARGA,
     DEFAULT_SOC_MIN,
     DEFAULT_SOC_RECUPERACION,
     DEFAULT_VERIFY_TOLERANCIA,
@@ -245,6 +248,7 @@ class EjecutorControl:
         self._motivo_estado = "arranque"
         self._ultimo_simulado = False
         self._guard_actual: str | None = None
+        self._modo_manual: tuple[str, datetime] | None = None
         self._ultimo_aplicado: dict[int, int] = {}
         self._escrituras_ts: list[datetime] = []
         self._fallos_consecutivos = 0
@@ -586,6 +590,9 @@ class EjecutorControl:
         (D5) con fallback tras 3 fallos consecutivos.
         """
         tramo = self.coordinador_plan.tramo_actual()
+        manual = self.modo_manual
+        if manual is not None:
+            tramo = self._tramo_manual(manual["accion"])
         if tramo is None:
             # Watchdog: plan ausente → no escribir; carga activa → fallback
             self._motivo_estado = f"sin tramo de plan ({motivo})"
@@ -718,6 +725,100 @@ class EjecutorControl:
         if self._modo_activacion() == COMPLETO:
             return True
         return tramo.accion == ACCION_CARGA_RED and self._periodo_actual() == "valle"
+
+    # ─── Modo manual (D13) ───
+
+    @property
+    def modo_manual(self) -> dict[str, Any] | None:
+        """Modo manual activo: {accion, hasta} o None si expiró."""
+        if self._modo_manual is None:
+            return None
+        accion, hasta = self._modo_manual
+        if datetime.now(tz=UTC) >= hasta:
+            _LOGGER.info(
+                "Modo manual %s expirado en %s: vuelta al plan",
+                accion,
+                hasta.isoformat(),
+            )
+            self._modo_manual = None
+        return (
+            {"accion": accion, "hasta": hasta.isoformat()}
+            if self._modo_manual is not None
+            else None
+        )
+
+    async def async_force_mode(
+        self, accion: str, hasta: datetime
+    ) -> dict[str, Any]:
+        """Fuerza una acción manual hasta ``hasta`` (D13).
+
+        El modo manual respeta **todas** las salvaguardas (límites YAML,
+        guard, fallo, watchdog, rate limiter, gradual) y expira solo al
+        llegar ``hasta``. ``hasta`` en el pasado → ``ValueError``.
+        """
+        if accion not in ACCIONES_MANUALES:
+            raise ValueError(
+                f"Acción manual no válida: {accion}. Válidas: "
+                f"{', '.join(ACCIONES_MANUALES)}"
+            )
+        if hasta <= datetime.now(tz=UTC):
+            raise ValueError(
+                f"'until' debe estar en el futuro: {hasta.isoformat()}"
+            )
+        self._modo_manual = (accion, hasta)
+        _LOGGER.info(
+            "Modo manual %s activado hasta %s (con salvaguardas)",
+            accion,
+            hasta.isoformat(),
+        )
+        await self.async_aplicar_tramo("force_mode")
+        return {
+            "modo_manual": accion,
+            "hasta": hasta.isoformat(),
+            "estado": self.estado,
+        }
+
+    async def async_release_manual(self) -> dict[str, Any]:
+        """Libera el modo manual inmediatamente (vuelta al plan)."""
+        liberado = self._modo_manual is not None
+        self._modo_manual = None
+        _LOGGER.info("Modo manual liberado (%s)", "manual" if liberado else "no había")
+        await self.async_aplicar_tramo("release_manual")
+        return {"liberado": liberado, "estado": self.estado}
+
+    def _tramo_manual(self, accion: str) -> PlanTramo:
+        """Tramo sintético del modo manual con los límites del plan.
+
+        CARGA_RED manual usa la potencia máxima de carga; VENTA_RED la
+        de descarga; AUTOCONSUMO/MANTENER los valores seguros. La
+        conversión a A y el recorte a los límites del YAML los hace la
+        traducción normal.
+        """
+        ahora = datetime.now().astimezone()
+        potencia_carga = float(
+            self._param(CONF_POTENCIA_MAX_CARGA, 5000.0)
+        )
+        potencia_descarga = float(
+            self._param(
+                CONF_POTENCIA_MAX_DESCARGA, DEFAULT_POTENCIA_MAX_DESCARGA
+            )
+        )
+        return PlanTramo(
+            fecha=ahora.date(),
+            tramo=ahora.hour * 4 + ahora.minute // 15,
+            hora=ahora.strftime("%H:%M"),
+            accion=accion,
+            potencia_bateria_w=0.0,
+            potencia_carga_red_w=(
+                potencia_carga if accion == ACCION_CARGA_RED else 0.0
+            ),
+            potencia_venta_red_w=(
+                potencia_descarga if accion == ACCION_VENTA_RED else 0.0
+            ),
+            soc_previsto_pct=0.0,
+            precio_referencia_eur_kwh=0.0,
+            ahorro_tramo_eur=0.0,
+        )
 
     # ─── Auditoría (D14) ───
 
@@ -923,6 +1024,7 @@ class EjecutorControl:
             "control_activo": self._control_activo,
             "fallos_consecutivos": self._fallos_consecutivos,
             "escrituras_ultima_hora": self._escrituras_ultima_hora(),
+            "modo_manual": self.modo_manual,
             "ultimo_aplicado": dict(self._ultimo_aplicado),
             "ruta_auditoria": str(self._ruta_auditoria()),
         }

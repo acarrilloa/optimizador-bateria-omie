@@ -39,3 +39,31 @@ regenerate_plan:
   description: >-
     Recalcula inmediatamente el plan de la batería (predicción + precios
     + SOC real). Dry-run: no escribe en el inversor.
+force_mode:
+  name: "Forzar modo"
+  description: >-
+    Fuerza una acción manual (AUTOCONSUMO, CARGA_RED, VENTA_RED o
+    MANTENER) hasta la fecha 'until'. Respeta todas las salvaguardas
+    y expira solo al llegar 'until'.
+  fields:
+    mode:
+      name: "Acción"
+      description: "Acción forzada hasta 'until'"
+      required: true
+      selector:
+        select:
+          options:
+            - "AUTOCONSUMO"
+            - "CARGA_RED"
+            - "VENTA_RED"
+            - "MANTENER"
+    until:
+      name: "Hasta"
+      description: "Fecha y hora de expiración (ISO 8601, debe ser futura)"
+      required: true
+      selector:
+        datetime: {}
+release_manual:
+  name: "Liberar modo manual"
+  description: >-
+    Libera inmediatamente el modo manual y vuelve al plan.

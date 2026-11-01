@@ -89,8 +89,19 @@ DEFAULT_ENTITY_ID_PREVISION_FV_MANANA = (
     "sensor.solcast_pv_forecast_forecast_tomorrow"
 )
 
-# Servicio del plan (F3)
+# Servicios (F2/F3/F4)
+SERVICE_PROBE_REGISTERS = "probe_registers"
 SERVICE_REGENERATE_PLAN = "regenerate_plan"
+SERVICE_FORCE_MODE = "force_mode"
+SERVICE_RELEASE_MANUAL = "release_manual"
+
+# Acciones válidas del modo manual (F4, D13)
+ACCIONES_MANUALES = (
+    "AUTOCONSUMO",
+    "CARGA_RED",
+    "VENTA_RED",
+    "MANTENER",
+)
 
 # --- Control (F4) ---
 CONF_DEVICE_ID_SOLARMAN = "device_id_solarman"

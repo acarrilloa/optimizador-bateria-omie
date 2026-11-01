@@ -1,8 +1,9 @@
-"""Servicios de la integración (F2: probe_registers; F3: regenerate_plan)."""
-# versión 0.9.0
+"""Servicios de la integración (F2: probe; F3: regenerate_plan; F4: force/release)."""
+# versión 0.10.0
 
 import logging
 from datetime import UTC, datetime
+from typing import Any
 
 import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry
@@ -15,6 +16,7 @@ from homeassistant.core import (
 from homeassistant.exceptions import ServiceValidationError
 
 from custom_components.optimizador_bateria_omie.const import (
+    ACCIONES_MANUALES,
     CONF_IP,
     CONF_PUERTO,
     CONF_SERIE,
@@ -22,8 +24,10 @@ from custom_components.optimizador_bateria_omie.const import (
     DEFAULT_PUERTO,
     DEFAULT_SERIE,
     DOMAIN,
+    SERVICE_FORCE_MODE,
     SERVICE_PROBE_REGISTERS,
     SERVICE_REGENERATE_PLAN,
+    SERVICE_RELEASE_MANUAL,
     TOLERANCIA_PROBE_PCT,
 )
 from custom_components.optimizador_bateria_omie.mapa_registros import (
@@ -285,6 +289,39 @@ def async_setup_services(hass: HomeAssistant) -> None:
     )
     _LOGGER.info("Servicio %s.%s registrado", DOMAIN, SERVICE_REGENERATE_PLAN)
 
+    if hass.services.has_service(DOMAIN, SERVICE_FORCE_MODE):
+        return
+
+    async def manejar_force_mode(llamada: ServiceCall) -> ServiceResponse:
+        """Fuerza una acción manual hasta 'until' (con salvaguardas)."""
+        entry = hass.config_entries.async_entries(DOMAIN)[0]
+        return await ejecutar_force_mode(hass, entry, dict(llamada.data))
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_FORCE_MODE,
+        manejar_force_mode,
+        schema=SCHEMA_FORCE_MODE,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    _LOGGER.info("Servicio %s.%s registrado", DOMAIN, SERVICE_FORCE_MODE)
+
+    async def manejar_release_manual(llamada: ServiceCall) -> ServiceResponse:
+        """Libera el modo manual y vuelve al plan."""
+        entry = hass.config_entries.async_entries(DOMAIN)[0]
+        return await ejecutar_release_manual(hass, entry)
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_RELEASE_MANUAL,
+        manejar_release_manual,
+        schema=vol.Schema({}),
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    _LOGGER.info(
+        "Servicio %s.%s registrado", DOMAIN, SERVICE_RELEASE_MANUAL
+    )
+
 
 async def ejecutar_regenerate_plan(hass, entry: ConfigEntry) -> dict:
     """Núcleo de regenerate_plan (D19, testeable sin registrar el servicio).
@@ -300,3 +337,54 @@ async def ejecutar_regenerate_plan(hass, entry: ConfigEntry) -> dict:
             "debe estar cargada con F3 activo"
         )
     return await coordinador_plan.async_regenerar()
+
+
+SCHEMA_FORCE_MODE = vol.Schema(
+    {
+        vol.Required("mode"): vol.In(list(ACCIONES_MANUALES)),
+        vol.Required("until"): vol.All(str),
+    }
+)
+
+
+def _parsear_until(valor: Any) -> datetime:
+    """Convierte 'until' (ISO 8601) en datetime consciente."""
+    try:
+        hasta = datetime.fromisoformat(str(valor))
+    except (TypeError, ValueError) as err:
+        raise ServiceValidationError(
+            f"'until' no es una fecha ISO 8601 válida: {valor!r}"
+        ) from err
+    if hasta.tzinfo is None:
+        hasta = hasta.replace(tzinfo=UTC)
+    return hasta
+
+
+async def ejecutar_force_mode(hass, entry: ConfigEntry, datos: dict) -> dict:
+    """Núcleo de force_mode (F4, D13, testeable sin registrar el servicio).
+
+    Fuerza una acción manual hasta ``until``; el modo manual respeta
+    todas las salvaguardas y expira solo al llegar ``until``.
+    """
+    datos_dominio = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+    ejecutor = datos_dominio.get("executor")
+    if ejecutor is None:
+        raise ServiceValidationError(
+            "El executor de control no está disponible (F4)"
+        )
+    hasta = _parsear_until(datos["until"])
+    try:
+        return await ejecutor.async_force_mode(datos["mode"], hasta)
+    except ValueError as err:
+        raise ServiceValidationError(str(err)) from err
+
+
+async def ejecutar_release_manual(hass, entry: ConfigEntry) -> dict:
+    """Núcleo de release_manual (F4, D13): libera el modo manual."""
+    datos_dominio = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+    ejecutor = datos_dominio.get("executor")
+    if ejecutor is None:
+        raise ServiceValidationError(
+            "El executor de control no está disponible (F4)"
+        )
+    return await ejecutor.async_release_manual()
