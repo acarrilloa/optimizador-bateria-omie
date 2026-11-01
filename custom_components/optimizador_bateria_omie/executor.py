@@ -31,6 +31,7 @@ from custom_components.optimizador_bateria_omie.const import (
     CONF_ENTITY_IDS_FALLO,
     CONF_LATENCIA_VERIFY_S,
     CONF_MAX_ESCRITURAS_HORA,
+    CONF_MODO_ACTIVACION,
     CONF_POTENCIA_CONTRATADA,
     CONF_POTENCIA_MAX_CARGA,
     CONF_SOC_MIN,
@@ -40,17 +41,25 @@ from custom_components.optimizador_bateria_omie.const import (
     DEFAULT_DEVICE_ID_SOLARMAN,
     DEFAULT_LATENCIA_VERIFY_S,
     DEFAULT_MAX_ESCRITURAS_HORA,
+    DEFAULT_MODO_ACTIVACION,
     DEFAULT_SOC_MIN,
     DEFAULT_SOC_RECUPERACION,
     DEFAULT_VERIFY_TOLERANCIA,
     DEFAULT_VOLTAJE_BATERIA_NOMINAL,
     DOMAIN,
     ESTADO_CONTROL_ACTIVO,
+    ESTADO_CONTROL_DRY_RUN,
     ESTADO_CONTROL_FALLBACK_BLOQUEADO,
     ESTADO_CONTROL_INACTIVO,
     FALLOS_VERIFY_FALLBACK,
     GUARD_CORTE,
     GUARD_REDUCCION,
+)
+from custom_components.optimizador_bateria_omie.const import (
+    MODO_ACTIVACION_COMPLETO as COMPLETO,
+)
+from custom_components.optimizador_bateria_omie.const import (
+    MODO_ACTIVACION_GRADUAL as GRADUAL,
 )
 from custom_components.optimizador_bateria_omie.coordinador_plan import (
     CoordinadorPlan,
@@ -234,6 +243,8 @@ class EjecutorControl:
         self._control_activo = False
         self._estado = ESTADO_CONTROL_INACTIVO
         self._motivo_estado = "arranque"
+        self._ultimo_simulado = False
+        self._guard_actual: str | None = None
         self._ultimo_aplicado: dict[int, int] = {}
         self._escrituras_ts: list[datetime] = []
         self._fallos_consecutivos = 0
@@ -522,6 +533,10 @@ class EjecutorControl:
             "estandar", "habilitar_carga_red", "control"
         )
         if fraccion >= GUARD_CORTE:
+            self._guard_actual = (
+                f"corte: importación {importacion:.0f} W ≥ "
+                f"{contratada:.0f} W contratados"
+            )
             _LOGGER.warning(
                 "Guard: importación %.0f W ≥ %.0f W contratados → "
                 "corriente de carga desde red a 0",
@@ -536,6 +551,10 @@ class EjecutorControl:
         margen_w = contratada * GUARD_REDUCCION - importacion
         reducida = self._recortar_corriente(
             "corriente_carga_red", margen_w / self._voltaje_nominal()
+        )
+        self._guard_actual = (
+            f"reducción: importación {importacion:.0f} W al "
+            f"{fraccion * 100:.0f} % de {contratada:.0f} W"
         )
         _LOGGER.warning(
             "Guard: importación al %.0f %% de la contratada → "
@@ -580,12 +599,18 @@ class EjecutorControl:
             f"{motivo}: acción {tramo.accion} "
             f"tramo {tramo.hora} ({tramo.fecha})"
         )
+        self._guard_actual = None
         if not self._control_activo:
             _LOGGER.info(
                 "[dry-run] %s: %s → %s (control_activo OFF)",
                 motivo,
                 tramo.accion,
                 objetivos or "sin escrituras",
+            )
+            self._ultimo_simulado = bool(objetivos)
+            await self._auditar(
+                tramo, objetivos, ejecutada=False,
+                motivo=f"{motivo}: control_activo OFF",
             )
             self._actualizar_estado()
             return
@@ -603,10 +628,27 @@ class EjecutorControl:
             self._actualizar_estado()
             return
 
+        # Activación gradual (D11): solo CARGA_RED en valle 2.0TD real
+        if not self._accion_ejecutable(tramo):
+            _LOGGER.info(
+                "[gradual] %s (%s) simulada: solo CARGA_RED en valle "
+                "2.0TD se ejecuta en modo gradual",
+                tramo.accion,
+                motivo,
+            )
+            self._ultimo_simulado = bool(objetivos)
+            await self._auditar(
+                tramo, objetivos, ejecutada=False,
+                motivo=f"{motivo}: simulada por modo gradual",
+            )
+            self._actualizar_estado()
+            return
+
         # Guard dinámico de potencia contratada (D9)
         objetivos = self._aplicar_guard(objetivos)
         pendientes = self._filtrar_idempotente(objetivos)
         if not pendientes:
+            self._ultimo_simulado = False
             self._actualizar_estado()
             return
 
@@ -620,16 +662,29 @@ class EjecutorControl:
                 self._escrituras_ultima_hora(),
                 maximo,
             )
+            self._ultimo_simulado = bool(pendientes)
+            await self._auditar(
+                tramo, pendientes, ejecutada=False,
+                motivo=f"{motivo}: aplazado por rate limiter",
+            )
             self._actualizar_estado()
             return
 
         _LOGGER.info(
             "Aplicando %s (%s): %s", tramo.accion, motivo, pendientes
         )
+        self._ultimo_simulado = False
         for addr, valor in pendientes.items():
             await self._escritor.escribir(addr, valor)
             self._escrituras_ts.append(datetime.now(tz=UTC))
+            inicio = datetime.now(tz=UTC)
             verificado = await self._verificar(addr, valor)
+            latencia = (datetime.now(tz=UTC) - inicio).total_seconds()
+            await self._auditar(
+                tramo, {addr: valor}, ejecutada=True,
+                verificado=verificado, latencia_s=latencia,
+                motivo=motivo,
+            )
             if verificado == "fallo":
                 self._fallos_consecutivos += 1
                 if self._fallos_consecutivos >= FALLOS_VERIFY_FALLBACK:
@@ -643,6 +698,71 @@ class EjecutorControl:
             # "parcial" (relectura con error de servicio) no cuenta (D5)
             self._ultimo_aplicado[addr] = valor
         self._actualizar_estado()
+
+    def _modo_activacion(self) -> str:
+        """Modo de activación configurado (gradual por defecto)."""
+        modo = str(
+            self._param(CONF_MODO_ACTIVACION, DEFAULT_MODO_ACTIVACION)
+        )
+        return modo if modo in (GRADUAL, COMPLETO) else GRADUAL
+
+    def _periodo_actual(self) -> str:
+        """Período 2.0TD del instante actual (valle/llano/punta)."""
+        modelo_tarifa = (
+            self.coordinador_plan.coordinador_precio.modelo_tarifa
+        )
+        return modelo_tarifa.obtener_periodo(datetime.now(tz=UTC))
+
+    def _accion_ejecutable(self, tramo: PlanTramo) -> bool:
+        """¿La acción se ejecuta de verdad en el modo actual? (D11)."""
+        if self._modo_activacion() == COMPLETO:
+            return True
+        return tramo.accion == ACCION_CARGA_RED and self._periodo_actual() == "valle"
+
+    # ─── Auditoría (D14) ───
+
+    async def _auditar(
+        self,
+        tramo: PlanTramo,
+        registros: dict[int, int],
+        ejecutada: bool,
+        verificado: str | None = None,
+        latencia_s: float | None = None,
+        motivo: str = "",
+    ) -> None:
+        """Añade una línea a la auditoría JSONL append-only.
+
+        La auditoría vive en ``config/optimizador_bateria_omie/`` para
+        sobrevivir a las actualizaciones de HACS; el directorio se crea
+        si no existe. Una línea por escritura real (con su verify) o por
+        aplicación simulada (``ejecutada: false``).
+        """
+        linea = {
+            "ts": datetime.now(tz=UTC).isoformat(),
+            "tramo": tramo.hora if tramo else None,
+            "accion": tramo.accion if tramo else "FALLBACK",
+            "registros": {str(addr): valor for addr, valor in registros.items()},
+            "ejecutada": ejecutada,
+            "verificado": verificado,
+            "latencia": round(latencia_s, 3) if latencia_s is not None else None,
+            "motivo": motivo,
+            "guard": self._guard_actual,
+        }
+        try:
+            await self.hass.async_add_executor_job(
+                self._anexar_linea_auditoria, linea
+            )
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("Auditoría: no se pudo escribir la línea: %s", err)
+
+    def _anexar_linea_auditoria(self, linea: dict) -> None:
+        """Escribe una línea JSON en la auditoría (bloqueante, executor)."""
+        import json  # pylint: disable=import-outside-toplevel
+
+        ruta = self._ruta_auditoria()
+        ruta.parent.mkdir(parents=True, exist_ok=True)
+        with open(ruta, "a", encoding="utf-8") as fichero:
+            fichero.write(json.dumps(linea, ensure_ascii=False) + "\n")
 
     async def _verificar(self, addr: int, valor: int) -> str:
         """Write-verify: relectura tras la latencia del datalogger.
@@ -692,6 +812,13 @@ class EjecutorControl:
             await self._escritor.escribir(addr_red, 0)
             self._ultimo_aplicado[addr_habilitar] = 0
             self._ultimo_aplicado[addr_red] = 0
+            await self._auditar(
+                None,
+                {addr_habilitar: 0, addr_red: 0},
+                ejecutada=True,
+                verificado="fallback",
+                motivo=f"fallback: {motivo}",
+            )
         except ErrorEscrituraSolarman as err:
             _LOGGER.error(
                 "Fallback: no se pudieron escribir los valores seguros "
@@ -770,11 +897,12 @@ class EjecutorControl:
     def _actualizar_estado(self) -> None:
         """Recalcula el estado visible y notifica (D12)."""
         if self._estado != ESTADO_CONTROL_FALLBACK_BLOQUEADO:
-            self._estado = (
-                ESTADO_CONTROL_ACTIVO
-                if self._control_activo
-                else ESTADO_CONTROL_INACTIVO
-            )
+            if not self._control_activo:
+                self._estado = ESTADO_CONTROL_INACTIVO
+            elif self._ultimo_simulado:
+                self._estado = ESTADO_CONTROL_DRY_RUN
+            else:
+                self._estado = ESTADO_CONTROL_ACTIVO
         self._notificar()
 
     @property

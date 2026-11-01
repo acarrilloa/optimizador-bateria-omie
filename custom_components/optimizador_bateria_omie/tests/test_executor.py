@@ -53,9 +53,13 @@ def _tramo(
 
 
 @pytest.fixture
-def hass():
+def hass(tmp_path):
+    """Hass mock: el executor ejecuta la función directamente."""
     h = MagicMock()
-    h.config.config_dir = ""
+    h.config.config_dir = str(tmp_path)
+    h.async_add_executor_job = AsyncMock(
+        side_effect=lambda fn, *args: fn(*args)
+    )
     return h
 
 
@@ -113,25 +117,29 @@ def _telemetria(
     )
 
 
-def _coordinador_con_tramo(tramo, telemetria=None):
+def _coordinador_con_tramo(tramo, telemetria=None, periodo="valle"):
     c = MagicMock()
     c.tramo_actual = MagicMock(return_value=tramo)
     c.async_registrar_callback = MagicMock(return_value=MagicMock())
     c.data = telemetria if telemetria is not None else _telemetria()
+    # Período 2.0TD del instante actual (para el modo gradual, D11)
+    c.coordinador_precio.modelo_tarifa.obtener_periodo.return_value = periodo
     return c
 
 
 def _executor(
-    hass, mapa, escritor, tramo, entry_data=None, telemetria=None
+    hass, mapa, escritor, tramo, entry_data=None, telemetria=None,
+    periodo="valle",
 ) -> EjecutorControl:
     entry = MagicMock()
     entry.data = dict(entry_data or {})
+    coordinador = _coordinador_con_tramo(tramo, telemetria, periodo)
     return EjecutorControl(
         hass=hass,
         entry=entry,
         mapa=mapa,
-        coordinador_plan=_coordinador_con_tramo(tramo, telemetria),
-        coordinador_telemetria=_coordinador_con_tramo(tramo, telemetria),
+        coordinador_plan=coordinador,
+        coordinador_telemetria=coordinador,
         escritor=escritor,
     )
 
@@ -164,7 +172,8 @@ class TestTraduccion:
     @pytest.mark.asyncio
     async def test_autoconsumo_valores_seguros(self, hass, mapa, escritor):
         executor = _executor(
-            hass, mapa, escritor, _tramo(ACCION_AUTOCONSUMO)
+            hass, mapa, escritor, _tramo(ACCION_AUTOCONSUMO),
+            entry_data={"modo_activacion": "completo"},
         )
         executor._control_activo = True
 
@@ -180,7 +189,8 @@ class TestTraduccion:
     @pytest.mark.asyncio
     async def test_venta_red(self, hass, mapa, escritor):
         executor = _executor(
-            hass, mapa, escritor, _tramo(ACCION_VENTA_RED, venta_w=2048.0)
+            hass, mapa, escritor, _tramo(ACCION_VENTA_RED, venta_w=2048.0),
+            entry_data={"modo_activacion": "completo"},
         )
         executor._control_activo = True
 
@@ -233,7 +243,10 @@ class TestLimite210:
             mapa,
             escritor,
             _tramo(ACCION_AUTOCONSUMO),
-            entry_data={"potencia_max_carga": 4000.0},
+            entry_data={
+                "potencia_max_carga": 4000.0,
+                "modo_activacion": "completo",
+            },
         )
         executor._control_activo = True
 
@@ -267,6 +280,7 @@ class TestLimite210:
             mapa,
             escritor,
             _tramo(ACCION_VENTA_RED, venta_w=80000.0),
+            entry_data={"modo_activacion": "completo"},
         )
         executor._control_activo = True
 
@@ -760,3 +774,166 @@ class TestBloqueoFallo:
 
         assert caplog.text.count("INACTIVO") == 1  # aviso una sola vez
 
+
+
+class TestModoGradual:
+    """D11: gradual → solo CARGA_RED en valle 2.0TD se ejecuta."""
+
+    @pytest.mark.asyncio
+    async def test_carga_red_en_valle_se_ejecuta(self, hass, mapa, escritor):
+        executor = _executor(
+            hass, mapa, escritor, _tramo(ACCION_CARGA_RED), periodo="valle"
+        )
+        executor._control_activo = True
+
+        await executor.async_aplicar_tramo("test")
+
+        assert escritor.escribir.call_count == 3
+        assert executor.estado == "activo"
+
+    @pytest.mark.asyncio
+    async def test_carga_red_fuera_de_valle_simulada(
+        self, hass, mapa, escritor
+    ):
+        executor = _executor(
+            hass, mapa, escritor, _tramo(ACCION_CARGA_RED), periodo="punta"
+        )
+        executor._control_activo = True
+
+        await executor.async_aplicar_tramo("test")
+
+        escritor.escribir.assert_not_called()
+        assert executor.estado == "dry_run"
+
+    @pytest.mark.asyncio
+    async def test_venta_red_simulada_en_gradual(self, hass, mapa, escritor):
+        executor = _executor(
+            hass,
+            mapa,
+            escritor,
+            _tramo(ACCION_VENTA_RED, venta_w=2048.0),
+            periodo="punta",
+        )
+        executor._control_activo = True
+
+        await executor.async_aplicar_tramo("test")
+
+        escritor.escribir.assert_not_called()
+        assert executor.estado == "dry_run"
+
+    @pytest.mark.asyncio
+    async def test_modo_completo_ejecuta_todo(self, hass, mapa, escritor):
+        executor = _executor(
+            hass,
+            mapa,
+            escritor,
+            _tramo(ACCION_VENTA_RED, venta_w=2048.0),
+            periodo="punta",
+            entry_data={"modo_activacion": "completo"},
+        )
+        executor._control_activo = True
+
+        await executor.async_aplicar_tramo("test")
+
+        assert escritor.escribir.call_count == 4  # 210, 211, 230, 232
+        assert executor.estado == "activo"
+
+
+class TestAuditoria:
+    """D14: JSONL append-only en config/optimizador_bateria_omie/."""
+
+    def _leer_lineas(self, hass) -> list[dict]:
+        import json
+        from pathlib import Path
+
+        ruta = (
+            Path(hass.config.config_dir)
+            / "optimizador_bateria_omie"
+            / "auditoria_escrituras.jsonl"
+        )
+        assert ruta.exists()
+        return [
+            json.loads(linea)
+            for linea in ruta.read_text(encoding="utf-8").splitlines()
+        ]
+
+    @pytest.mark.asyncio
+    async def test_escritura_real_auditada(self, hass, mapa, escritor):
+        executor = _executor(
+            hass, mapa, escritor, _tramo(ACCION_CARGA_RED), periodo="valle"
+        )
+        executor._control_activo = True
+
+        await executor.async_aplicar_tramo("test")
+
+        lineas = self._leer_lineas(hass)
+        assert len(lineas) == 3  # una por registro escrito
+        for linea in lineas:
+            assert linea["ejecutada"] is True
+            assert linea["verificado"] == "ok"
+            assert linea["accion"] == ACCION_CARGA_RED
+            assert linea["tramo"] == "02:30"
+            assert "motivo" in linea
+            assert linea["latencia"] is not None
+
+    @pytest.mark.asyncio
+    async def test_simulada_auditada_con_motivo(self, hass, mapa, escritor):
+        executor = _executor(hass, mapa, escritor, _tramo(ACCION_CARGA_RED))
+        await executor.async_aplicar_tramo("arranque")  # control OFF
+
+        lineas = self._leer_lineas(hass)
+        assert len(lineas) == 1
+        assert lineas[0]["ejecutada"] is False
+        assert "control_activo OFF" in lineas[0]["motivo"]
+
+    @pytest.mark.asyncio
+    async def test_gradual_simulada_auditada(self, hass, mapa, escritor):
+        executor = _executor(
+            hass, mapa, escritor, _tramo(ACCION_VENTA_RED), periodo="punta"
+        )
+        executor._control_activo = True
+        await executor.async_aplicar_tramo("test")
+
+        lineas = self._leer_lineas(hass)
+        assert lineas[0]["ejecutada"] is False
+        assert "gradual" in lineas[0]["motivo"]
+
+    @pytest.mark.asyncio
+    async def test_guard_registrado_en_auditoria(self, hass, mapa, escritor):
+        estado = MagicMock()
+        estado.state = "6000"  # ≥ 100 % de la contratada
+        hass.states.get = MagicMock(return_value=estado)
+        executor = _executor(
+            hass,
+            mapa,
+            escritor,
+            _tramo(ACCION_CARGA_RED, carga_red_w=4096.0),
+            periodo="valle",
+            entry_data={"entity_id_potencia_red": "sensor.red"},
+        )
+        executor._control_activo = True
+
+        await executor.async_aplicar_tramo("test")
+
+        lineas = self._leer_lineas(hass)
+        assert all(
+            linea["guard"] and "corte" in linea["guard"]
+            for linea in lineas
+        )
+
+    @pytest.mark.asyncio
+    async def test_fallback_auditado(self, hass, mapa, escritor):
+        executor = _executor(hass, mapa, escritor, _tramo(ACCION_CARGA_RED))
+        executor._control_activo = True
+        escritor.leer = AsyncMock(side_effect=lambda addr, cantidad=1: [-1])
+
+        await executor.async_aplicar_tramo("test")
+
+        lineas = self._leer_lineas(hass)
+        # 3 reales (fallidas) + 1 línea de valores seguros del fallback
+        assert any(linea["accion"] == "FALLBACK" for linea in lineas)
+        fallback = [
+            linea for linea in lineas if linea["accion"] == "FALLBACK"
+        ][0]
+        assert fallback["ejecutada"] is True
+        assert fallback["verificado"] == "fallback"
