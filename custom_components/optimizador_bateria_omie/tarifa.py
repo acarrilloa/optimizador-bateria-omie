@@ -1,25 +1,131 @@
 """Modelo de tarifa eléctrica española 2.0TD."""
-# versión 0.7.1
+# versión 0.10.0
 
 from datetime import datetime
+from typing import Any
 
-from custom_components.optimizador_bateria_omie.const import FESTIVOS_ESPANA
+from custom_components.optimizador_bateria_omie.const import (
+    CONF_APLICAR_IMPUESTOS_PRECIO,
+    CONF_CARGO_SISTEMA_LLANO,
+    CONF_CARGO_SISTEMA_PUNTA,
+    CONF_CARGO_SISTEMA_VALLE,
+    CONF_IMPUESTO_ELECTRICO_PCT,
+    CONF_IVA_PCT,
+    CONF_PEAYE_ACCESO_LLANO,
+    CONF_PEAYE_ACCESO_PUNTA,
+    CONF_PEAYE_ACCESO_VALLE,
+    CONF_POTENCIA_CONTRATADA,
+    DEFAULT_APLICAR_IMPUESTOS_PRECIO,
+    DEFAULT_CARGO_SISTEMA_LLANO,
+    DEFAULT_CARGO_SISTEMA_PUNTA,
+    DEFAULT_CARGO_SISTEMA_VALLE,
+    DEFAULT_IMPUESTO_ELECTRICO_PCT,
+    DEFAULT_IVA_PCT,
+    DEFAULT_PEAYE_ACCESO_LLANO,
+    DEFAULT_PEAYE_ACCESO_PUNTA,
+    DEFAULT_PEAYE_ACCESO_VALLE,
+    DEFAULT_POTENCIA_CONTRATADA,
+    FESTIVOS_ESPANA,
+)
 
 
 class ConfiguracionTarifa:
-    """Configuración de la tarifa eléctrica."""
+    """Configuración de la tarifa eléctrica.
+
+    Desde F4 (deuda #5) los peajes, cargos e impuestos viven en
+    ``entry.data`` con ``ConfiguracionTarifa.desde_entry``; los defaults
+    de clase siguen siendo los valores confirmados 2.0TD. La potencia
+    contratada tiene una única fuente: ``potencia_contratada`` (W) del
+    entry (se convierte a kW aquí).
+    """
 
     def __init__(
         self,
         potencia_contratada_kw: float = 5.75,
-        impuesto_electrico_pct: float = 0.051127,
-        iva_pct: float = 0.21,
-        aplicar_impuestos_precio: bool = True,
-    ):
+        impuesto_electrico_pct: float = DEFAULT_IMPUESTO_ELECTRICO_PCT,
+        iva_pct: float = DEFAULT_IVA_PCT,
+        aplicar_impuestos_precio: bool = DEFAULT_APLICAR_IMPUESTOS_PRECIO,
+        peajes_acceso: dict[str, float] | None = None,
+        cargos_sistema: dict[str, float] | None = None,
+    ) -> None:
         self.potencia_contratada_kw = potencia_contratada_kw
         self.impuesto_electrico_pct = impuesto_electrico_pct
         self.iva_pct = iva_pct
         self.aplicar_impuestos_precio = aplicar_impuestos_precio
+        self.peajes_acceso = peajes_acceso or {
+            "punta": DEFAULT_PEAYE_ACCESO_PUNTA,
+            "llano": DEFAULT_PEAYE_ACCESO_LLANO,
+            "valle": DEFAULT_PEAYE_ACCESO_VALLE,
+        }
+        self.cargos_sistema = cargos_sistema or {
+            "punta": DEFAULT_CARGO_SISTEMA_PUNTA,
+            "llano": DEFAULT_CARGO_SISTEMA_LLANO,
+            "valle": DEFAULT_CARGO_SISTEMA_VALLE,
+        }
+
+    @classmethod
+    def desde_entry(cls, entry: Any) -> "ConfiguracionTarifa":
+        """Configuración desde ``entry.data`` con defaults confirmados.
+
+        La entrada de producción (sin las claves nuevas) obtiene
+        exactamente los valores que estaban hardcodeados en F1.
+        """
+        data = getattr(entry, "data", None) or {}
+        return cls(
+            potencia_contratada_kw=float(
+                data.get(
+                    CONF_POTENCIA_CONTRATADA, DEFAULT_POTENCIA_CONTRATADA
+                )
+            )
+            / 1000,
+            impuesto_electrico_pct=float(
+                data.get(
+                    CONF_IMPUESTO_ELECTRICO_PCT,
+                    DEFAULT_IMPUESTO_ELECTRICO_PCT,
+                )
+            ),
+            iva_pct=float(data.get(CONF_IVA_PCT, DEFAULT_IVA_PCT)),
+            aplicar_impuestos_precio=bool(
+                data.get(
+                    CONF_APLICAR_IMPUESTOS_PRECIO,
+                    DEFAULT_APLICAR_IMPUESTOS_PRECIO,
+                )
+            ),
+            peajes_acceso={
+                "punta": float(
+                    data.get(
+                        CONF_PEAYE_ACCESO_PUNTA, DEFAULT_PEAYE_ACCESO_PUNTA
+                    )
+                ),
+                "llano": float(
+                    data.get(
+                        CONF_PEAYE_ACCESO_LLANO, DEFAULT_PEAYE_ACCESO_LLANO
+                    )
+                ),
+                "valle": float(
+                    data.get(
+                        CONF_PEAYE_ACCESO_VALLE, DEFAULT_PEAYE_ACCESO_VALLE
+                    )
+                ),
+            },
+            cargos_sistema={
+                "punta": float(
+                    data.get(
+                        CONF_CARGO_SISTEMA_PUNTA, DEFAULT_CARGO_SISTEMA_PUNTA
+                    )
+                ),
+                "llano": float(
+                    data.get(
+                        CONF_CARGO_SISTEMA_LLANO, DEFAULT_CARGO_SISTEMA_LLANO
+                    )
+                ),
+                "valle": float(
+                    data.get(
+                        CONF_CARGO_SISTEMA_VALLE, DEFAULT_CARGO_SISTEMA_VALLE
+                    )
+                ),
+            },
+        )
 
 
 class PeriodoTarifa:
@@ -77,12 +183,16 @@ class ModeloTarifa:
         return "valle"
 
     def obtener_peaje_cargo(self, periodo: str) -> float:
-        """Obtiene el peaje + cargo para un período dado."""
-        if periodo == "punta":
-            return self.PEAJE_ACCESO_PUNTA + self.CARGO_SISTEMA_PUNTA
-        if periodo == "llano":
-            return self.PEAJE_ACCESO_LLANO + self.CARGO_SISTEMA_LLANO
-        return self.PEAJE_ACCESO_VALLE + self.CARGO_SISTEMA_VALLE
+        """Obtiene el peaje + cargo para un período dado.
+
+        Desde F4 (deuda #5) los valores salen de la ``ConfiguracionTarifa``
+        (entry.data); las constantes de clase quedan solo como defaults
+        documentados.
+        """
+        return (
+            self.config.peajes_acceso.get(periodo, 0.0)
+            + self.config.cargos_sistema.get(periodo, 0.0)
+        )
 
     def obtener_precio_efectivo(
         self, precio_spot: float, fecha_hora_utc: datetime

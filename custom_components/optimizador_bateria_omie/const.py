@@ -92,6 +92,28 @@ DEFAULT_ENTITY_ID_PREVISION_FV_MANANA = (
 # Servicio del plan (F3)
 SERVICE_REGENERATE_PLAN = "regenerate_plan"
 
+# --- Tarifa desde entry.data (F4, deuda #5) ---
+# Defaults = valores confirmados de la tarifa 2.0TD (antes hardcodeados en tarifa.py)
+CONF_PEAYE_ACCESO_PUNTA = "peaje_acceso_punta"
+CONF_PEAYE_ACCESO_LLANO = "peaje_acceso_llano"
+CONF_PEAYE_ACCESO_VALLE = "peaje_acceso_valle"
+CONF_CARGO_SISTEMA_PUNTA = "cargo_sistema_punta"
+CONF_CARGO_SISTEMA_LLANO = "cargo_sistema_llano"
+CONF_CARGO_SISTEMA_VALLE = "cargo_sistema_valle"
+CONF_IMPUESTO_ELECTRICO_PCT = "impuesto_electrico_pct"
+CONF_IVA_PCT = "iva_pct"
+CONF_APLICAR_IMPUESTOS_PRECIO = "aplicar_impuestos_precio"
+
+DEFAULT_PEAYE_ACCESO_PUNTA = 0.033261
+DEFAULT_PEAYE_ACCESO_LLANO = 0.016409
+DEFAULT_PEAYE_ACCESO_VALLE = 0.000077
+DEFAULT_CARGO_SISTEMA_PUNTA = 0.064292
+DEFAULT_CARGO_SISTEMA_LLANO = 0.012858
+DEFAULT_CARGO_SISTEMA_VALLE = 0.003215
+DEFAULT_IMPUESTO_ELECTRICO_PCT = 0.051127
+DEFAULT_IVA_PCT = 0.21
+DEFAULT_APLICAR_IMPUESTOS_PRECIO = True
+
 # Fuentes de la previsión FV (F3, D8)
 FUENTE_FV_SOLCAST = "solcast"
 FUENTE_FV_PERFIL = "perfil"

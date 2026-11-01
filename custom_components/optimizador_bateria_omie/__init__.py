@@ -50,7 +50,10 @@ from custom_components.optimizador_bateria_omie.services import (
 from custom_components.optimizador_bateria_omie.solarman_client import (
     ClienteSolarman,
 )
-from custom_components.optimizador_bateria_omie.tarifa import ModeloTarifa
+from custom_components.optimizador_bateria_omie.tarifa import (
+    ConfiguracionTarifa,
+    ModeloTarifa,
+)
 from custom_components.optimizador_bateria_omie.telemetria import (
     CoordinadorTelemetria,
     GestorValidacion,
@@ -84,6 +87,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await gestor.async_revalidar(mapa)
 
     # ── F1: coordinador de precios OMIE ──
+    # Deuda #5 (F4): la tarifa se configura desde entry.data con los
+    # defaults confirmados 2.0TD (la entrada de producción no cambia).
     config = ConfiguracionOmie(
         fuente_prioritaria=entry.data.get(
             "fuente_prioritaria", DEFAULT_FUENTE_PRIORITARIA
@@ -91,8 +96,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         usar_cache=entry.data.get("usar_cache", DEFAULT_USAR_CACHE),
         dias_cache=entry.data.get("dias_cache", DEFAULT_DIAS_CACHE),
     )
+    modelo_tarifa = ModeloTarifa(
+        ConfiguracionTarifa.desde_entry(entry)
+    )
     coordinador_precio = CoordinadorDatosOmie(
-        hass, ClienteOmie(hass, config), ModeloTarifa(), entry
+        hass, ClienteOmie(hass, config), modelo_tarifa, entry
     )
     try:
         await coordinador_precio.async_config_entry_first_refresh()
@@ -129,7 +137,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass,
         fuente_consumo,
         fuente_fv,
-        ModeloTarifa(),
+        modelo_tarifa,
         dict(entry.data),
     )
     perfil_cargado = await predictor.async_cargar_perfil()
