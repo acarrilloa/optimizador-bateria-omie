@@ -5,7 +5,7 @@ arranque, al llegar precios nuevos (D+1 ~13:45), al cambiar de tramo
 (cada 15 min), al togglear ``festivo_hoy``, por desviación de SOC y con
 el servicio ``regenerate_plan``. **Nunca escribe en el inversor.**
 """
-# versión 0.9.0
+# versión 0.10.1
 
 import logging
 from collections.abc import Callable
@@ -218,14 +218,18 @@ class CoordinadorPlan:
     # ─── Cálculo del plan ───
 
     def _precios_efectivos(
-        self, ranuras: list | None
+        self,
+        ranuras: list | None,
+        festivo_manual: bool = False,
     ) -> list[float] | None:
         """Precios efectivos €/kWh por posición de tramo del día."""
         if not ranuras:
             return None
         return [
             self.coordinador_precio.modelo_tarifa.obtener_precio_efectivo(
-                r.precio_eur_kwh, r.fecha_hora_utc
+                r.precio_eur_kwh,
+                r.fecha_hora_utc,
+                festivo_manual=festivo_manual,
             )
             for r in ranuras
         ]
@@ -239,7 +243,7 @@ class CoordinadorPlan:
         prediccion_hoy = await self.predictor.predecir(
             hoy, festivo_hoy=self._festivo_hoy
         )
-        precios_manana = self._precios_efectivos(datos.precios_manana)
+        precios_manana = self._precios_efectivos(datos.precios_manana,)
         prediccion_manana = None
         if precios_manana is not None:
             prediccion_manana = await self.predictor.predecir(manana)
@@ -255,7 +259,9 @@ class CoordinadorPlan:
         self.planificador.p = ParametrosPlanner.desde_entry(self.entry)
         plan = self.planificador.planificar(
             hoy,
-            self._precios_efectivos(datos.precios_hoy) or [],
+            self._precios_efectivos(
+                datos.precios_hoy, festivo_manual=self._festivo_hoy
+            ) or [],
             precios_manana,
             prediccion_hoy,
             prediccion_manana,

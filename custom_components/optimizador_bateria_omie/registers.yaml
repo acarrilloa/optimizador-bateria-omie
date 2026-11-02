@@ -2,7 +2,7 @@
 # Las direcciones viven SOLO en este fichero: prohibido hardcodearlas en código.
 # Override de usuario (sobrevive a actualizaciones de HACS):
 #   config/optimizador_bateria_omie/registers.yaml
-# versión: 0.8.5
+# versión: 0.10.0
 inverter: "deye-sun-6k-sg05lp1-am2"
 block_size: 16
 

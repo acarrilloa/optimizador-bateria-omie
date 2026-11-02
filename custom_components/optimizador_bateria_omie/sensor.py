@@ -1,5 +1,5 @@
 """Plataforma de sensores para la integración Optimizador Batería OMIE."""
-# versión 0.10.0
+# versión 0.10.1
 
 import logging
 
@@ -18,6 +18,7 @@ from custom_components.optimizador_bateria_omie.entidades_control import (
     SensorEstadoControl,
 )
 from custom_components.optimizador_bateria_omie.entidades_plan import (
+    SensorAhorroEfectivoHoy,
     SensorAhorroEstimadoHoy,
     SensorPlan,
     SensorPrediccionConsumo,
@@ -74,6 +75,9 @@ async def async_setup_entry(
             SensorPlan(coordinador_plan),
             SensorAhorroEstimadoHoy(coordinador_plan),
         ])
+    # Ahorro efectivo (F4.5): vive en la auditoría, no en el plan
+    if "auditoria" in datos_dominio:
+        entidades.append(SensorAhorroEfectivoHoy(datos_dominio["auditoria"]))
 
     # Sensor de estado de control (F4): reusa el EjecutorControl del setup
     if "executor" in datos_dominio:

@@ -3,7 +3,7 @@
 Todas comparten el dispositivo de F1/F2 y se repintan por callback del
 ``CoordinadorPlan`` (sin polling). Ninguna toca el inversor.
 """
-# versión 0.9.0
+# versión 0.10.1
 
 import logging
 from dataclasses import asdict
@@ -32,6 +32,14 @@ from custom_components.optimizador_bateria_omie.coordinador_plan import (
 from custom_components.optimizador_bateria_omie.predictor_consumo import (
     PercentilesTramo,
 )
+
+from homeassistant.helpers.event import async_track_time_change
+from homeassistant.helpers.restore_state import RestoreEntity
+from homeassistant.helpers.storage import Store
+from datetime import datetime
+
+STORE_KEY_FESTIVO = f"{DOMAIN}/festivo_hoy"
+SENSOR_AHORRO_EFECTIVO_HOY = f"{DOMAIN}_ahorro_efectivo_hoy"
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -200,7 +208,7 @@ class SensorAhorroEstimadoHoy(EntidadBasePlan):
         }
 
 
-class SwitchFestivoHoy(SwitchEntity):
+class SwitchFestivoHoy(SwitchEntity, RestoreEntity):
     """Marca manual de festivo/vacaciones para hoy (D15)."""
 
     _attr_unique_id = SWITCH_FESTIVO_HOY
@@ -208,13 +216,76 @@ class SwitchFestivoHoy(SwitchEntity):
     _attr_has_entity_name = True
     _attr_icon = "mdi:calendar-remove"
 
-    def __init__(self, coordinador: CoordinadorPlan) -> None:
-        """Inicializa con el coordinador del plan."""
+    def __init__(self, coordinador: CoordinadorPlan, hass) -> None:
         self._coordinador = coordinador
+        self.hass = hass
+        self._store = Store(hass, 1, STORE_KEY_FESTIVO)
 
     @property
     def device_info(self) -> DeviceInfo:
-        """Dispositivo compartido con F1/F2."""
+        return DeviceInfo(
+            identifiers={(DOMAIN, "optimizador_bateria_omie")},
+            name="Optimizador Batería OMIE",
+            manufacturer="Custom Component",
+            model="Optimizador Batería OMIE",
+        )
+
+    async def async_added_to_hass(self) -> None:
+        """Restaura el estado y registra el reset diario."""
+        await super().async_added_to_hass()
+        datos = await self._store.async_load()
+        hoy = datetime.now().date().isoformat()
+        if datos and datos.get("fecha") == hoy and datos.get("festivo"):
+            await self._coordinador.async_set_festivo_hoy(True)
+            self.async_write_ha_state()
+
+        self.async_on_remove(
+            async_track_time_change(
+                self.hass, self._reset_diario,
+                hour=0, minute=1, second=0,
+            )
+        )
+
+    async def _reset_diario(self, now=None) -> None:
+        """Al cambiar de día, apaga el switch automáticamente."""
+        datos = await self._store.async_load()
+        hoy = datetime.now().date().isoformat()
+        if datos and datos.get("fecha") != hoy:
+            await self._store.async_save({"festivo": False, "fecha": None})
+            await self._coordinador.async_set_festivo_hoy(False)
+            self.async_write_ha_state()
+
+    @property
+    def is_on(self) -> bool:
+        return self._coordinador.festivo_hoy
+
+    async def async_turn_on(self, **kwargs) -> None:
+        hoy = datetime.now().date().isoformat()
+        await self._store.async_save({"festivo": True, "fecha": hoy})
+        await self._coordinador.async_set_festivo_hoy(True)
+        self.async_write_ha_state()
+
+    async def async_turn_off(self, **kwargs) -> None:
+        await self._store.async_save({"festivo": False, "fecha": None})
+        await self._coordinador.async_set_festivo_hoy(False)
+        self.async_write_ha_state()
+
+class SensorAhorroEfectivoHoy(SensorEntity):
+    """Ahorro real medido del día (vs. coste sin batería)."""
+
+    _attr_has_entity_name = True
+    _attr_unique_id = SENSOR_AHORRO_EFECTIVO_HOY
+    _attr_name = "Ahorro efectivo hoy"
+    _attr_native_unit_of_measurement = "€"
+    _attr_device_class = SensorDeviceClass.MONETARY
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+    _attr_icon = "mdi:currency-eur"
+
+    def __init__(self, auditoria) -> None:
+        self._auditoria = auditoria
+
+    @property
+    def device_info(self) -> DeviceInfo:
         return DeviceInfo(
             identifiers={(DOMAIN, "optimizador_bateria_omie")},
             name="Optimizador Batería OMIE",
@@ -223,14 +294,9 @@ class SwitchFestivoHoy(SwitchEntity):
         )
 
     @property
-    def is_on(self) -> bool:
-        """Estado de la marca manual."""
-        return self._coordinador.festivo_hoy
+    def native_value(self) -> float:
+        return self._auditoria.ahorro_real_hoy
 
-    async def async_turn_on(self, **kwargs) -> None:
-        """Marca hoy como festivo y replanifica."""
-        await self._coordinador.async_set_festivo_hoy(True)
-
-    async def async_turn_off(self, **kwargs) -> None:
-        """Quita la marca de festivo y replanifica."""
-        await self._coordinador.async_set_festivo_hoy(False)
+    @property
+    def extra_state_attributes(self) -> dict:
+        return self._auditoria.desglose

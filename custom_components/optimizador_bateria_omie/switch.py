@@ -1,5 +1,5 @@
 """Plataforma switch: Festivo hoy (F3) y Control activo (F4)."""
-# versión 0.10.0
+# versión 0.10.1
 
 import logging
 
@@ -22,7 +22,7 @@ async def async_setup_entry(
 ) -> None:
     """Añade el switch de festivo manual y el de control activo."""
     datos = hass.data[DOMAIN][entry.entry_id]
-    entidades = [SwitchFestivoHoy(datos["coordinador_plan"])]
+    entidades = [SwitchFestivoHoy(datos["coordinador_plan"], hass)]
     if "executor" in datos:
         entidades.append(SwitchControlActivo(datos["executor"]))
     async_add_entities(entidades)

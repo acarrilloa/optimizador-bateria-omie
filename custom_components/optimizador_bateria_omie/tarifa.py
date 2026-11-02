@@ -1,5 +1,5 @@
 """Modelo de tarifa eléctrica española 2.0TD."""
-# versión 0.10.0
+# versión 0.10.1
 
 from datetime import datetime
 from typing import Any
@@ -165,17 +165,20 @@ class ModeloTarifa:
     def __init__(self, config: ConfiguracionTarifa | None = None):
         self.config = config or ConfiguracionTarifa()
 
-    def obtener_periodo(self, fecha_hora_utc: datetime) -> str:
+    def obtener_periodo(
+        self, fecha_hora_utc: datetime, festivo_manual: bool = False
+    ) -> str:
         """Determina el período tarifario (punta, llano, valle).
 
-        - Fines de semana y festivos nacionales → valle todo el día.
-        - Laborables: ventanas horarias en hora local.
+        ``festivo_manual=True`` fuerza valle todo el día (override del switch
+        ``festivo_hoy``).
         """
-        fecha_local = fecha_hora_utc.astimezone()  # CET/CEST automático
+        fecha_local = fecha_hora_utc.astimezone()
 
+        if festivo_manual:
+            return "valle"
         if self.es_festivo(fecha_local) or self.es_fin_de_semana(fecha_local):
             return "valle"
-
         if PeriodoTarifa.es_punta(fecha_local):
             return "punta"
         if PeriodoTarifa.es_llano(fecha_local):
@@ -195,10 +198,13 @@ class ModeloTarifa:
         )
 
     def obtener_precio_efectivo(
-        self, precio_spot: float, fecha_hora_utc: datetime
+        self,
+        precio_spot: float,
+        fecha_hora_utc: datetime,
+        festivo_manual: bool = False,
     ) -> float:
         """Precio efectivo = (spot + peaje + cargo) × (1+IE) × (1+IVA)."""
-        periodo = self.obtener_periodo(fecha_hora_utc)
+        periodo = self.obtener_periodo(fecha_hora_utc, festivo_manual)
         precio_con_peajes = precio_spot + self.obtener_peaje_cargo(periodo)
 
         if self.config.aplicar_impuestos_precio:

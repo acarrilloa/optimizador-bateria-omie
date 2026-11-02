@@ -1,12 +1,15 @@
 """Custom component para optimizar el uso de baterías con precios OMIE."""
-# versión 0.10.0
+# versión 0.10.1
 
 import importlib
 import logging
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 
+from custom_components.optimizador_bateria_omie.auditoria import (
+    AuditoriaAhorro,
+)
 from custom_components.optimizador_bateria_omie.cliente_omie import (
     ClienteOmie,
     ConfiguracionOmie,
@@ -61,6 +64,8 @@ from custom_components.optimizador_bateria_omie.telemetria import (
     CoordinadorTelemetria,
     GestorValidacion,
 )
+
+from datetime import UTC, datetime
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -127,6 +132,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coordinador_telemetria = CoordinadorTelemetria(
         hass, cliente_solarman, gestor, entry
     )
+    auditoria = AuditoriaAhorro(hass, coordinador_precio, coordinador_telemetria)
+    await auditoria.async_cargar()
+
+    @callback
+    def _actualizar_auditoria():
+        hass.async_create_task(
+            auditoria.async_actualizar(datetime.now(tz=UTC))
+        )
+
+    cancelar_auditoria = coordinador_telemetria.async_add_listener(
+        _actualizar_auditoria
+    )
 
     # ── F3: predicción (perfil + Solcast) y planificador greedy ──
     fuente_consumo = FuenteHistoricoRecorder(
@@ -192,6 +209,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "predictor": predictor,
         "coordinador_plan": coordinador_plan,
         "executor": ejecutor,
+        "auditoria": auditoria,
+        "_cancelar_auditoria": cancelar_auditoria,
     }
 
     async_setup_services(hass)
@@ -204,8 +223,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Desconfiguración de la integración."""
     datos = hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
-    if datos and "coordinador_plan" in datos:
-        await datos["coordinador_plan"].async_descargar()
-    if datos and "executor" in datos:
-        await datos["executor"].async_descargar()
+    if datos:
+        if "coordinador_plan" in datos:
+            await datos["coordinador_plan"].async_descargar()
+        if "executor" in datos:
+            await datos["executor"].async_descargar()
+        if "_cancelar_auditoria" in datos:
+            datos["_cancelar_auditoria"]()
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
