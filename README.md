@@ -48,7 +48,7 @@ Calcula un **plan por tramos de 15 min** priorizando autoconsumo y aplicando arb
 - **Previsión de FV con Solcast PV Forecast como fuente preferente** (`sensor.solcast_pv_forecast_forecast_today` / `_forecast_tomorrow`, atributo `detailedForecast`, mapeo 30→15 min), con el perfil estadístico como fallback.
 - **`PlanificadorGreedy`** (función pura, determinista): autoconsumo siempre; `CARGA_RED` en tramos baratos (bajo umbral y bajo la mediana del día; precio ≤ 0 → carga máxima); `VENTA_RED` solo si el ciclo compensa la eficiencia round-trip + margen; restricción dura de **5,75 kW** de importación.
 - **Replanificación**: precios nuevos, cambio de tramo (15 min), desviación SOC > 10 %, o servicio `regenerate_plan`.
-- **Cuatro entidades**: `prediccion_consumo` (W + curva p10/p50/p90), `plan` (acción del tramo + plan completo + ahorro estimado), `ahorro_estimado_hoy` (€, teórico; el real auditable llega en F5) y `switch.festivo_hoy`.
+- **Cuatro entidades**: `prediccion_consumo` (W + curva p10/p50/p90), `plan` (acción del tramo + plan completo + ahorro estimado), `ahorro_estimado_hoy` (€, teórico) y `switch.festivo_hoy`.
 - Parámetros del plan editables por *Reconfigurar* **y en caliente** vía las entidades `number` de F4, con recálculo del plan en ≤ 60 s.
 
 ### Fase F4 (Completada) ✅ — Executor de control del inversor
@@ -67,9 +67,18 @@ Aplica el plan de F3 **escribiendo en el inversor** con todas las salvaguardas. 
 - **Auditoría JSONL** append-only: `config/optimizador_bateria_omie/auditoria_escrituras.jsonl` — cada escritura real o simulada con `{ts, tramo, accion, registros, ejecutada, verificado, latencia, motivo, guard}`. Ubicada fuera de `custom_components/` para sobrevivir a actualizaciones de HACS.
 - **Deuda #5 resuelta**: peajes, cargos, impuesto eléctrico e IVA de la tarifa 2.0TD pasan a `entry.data`, editables por *Reconfigurar* (defaults = valores vigentes). La entrada de producción no se rompe.
 
+### Fase F4.5 (0.10.1) — Auditoría de ahorro efectivo ✅
+
+Anticipa parte de la auditoría prevista para F5: mide el **ahorro real** acumulado del día y lo compara con el teórico del plan.
+
+- **`auditoria.py` (`AuditoriaAhorro`)**: en cada ciclo de telemetría, cierra el tramo de 15 min anterior y acumula: descarga/carga de batería, importación/exportación de red, `coste_sin_bateria` (todo el consumo al precio efectivo del tramo) y `coste_real` (energía neta de red al mismo precio). El tramo y el día se indexan **en hora local** (igual que `precios_hoy`). Persistencia en `hass.storage` (`optimizador_bateria_omie/auditoria.json`), con recuperación tras reinicio y reset diario.
+- **`sensor.*_ahorro_efectivo_hoy`** (€, `state_class: total`): ahorro real del día. Atributos: `coste_sin_bateria_eur`, `coste_real_eur`, `descarga_bateria_kwh`, `carga_bateria_kwh`, `red_importada_kwh`, `red_exportada_kwh`.
+- **Simplificaciones conocidas** (mejorables en F5): la exportación se netea contra la importación al mismo precio (sin precio de excedentes específico); la potencia del tramo se aproxima con la lectura de telemetría en el cierre del tramo; no descuenta pérdidas de descarga.
+- **Corrección de `switch.festivo_hoy`**: el estado ahora **persiste** en `hass.storage` (sobrevive reinicios del mismo día) y se **apaga automáticamente al cambiar de día**. Además, con el interruptor activado el precio efectivo y el plan tratan el día completo como **valle** (via `ModeloTarifa.obtener_precio_efectivo(..., festivo_manual=True)`); la tarifa facturada real solo cambia en festivos de calendario, no por vacaciones propias.
+
 ### Fases futuras 🚧
 
-- **F5**: Predicción ML + Optimización con programación lineal + auditoría de ahorro real
+- **F5**: Predicción ML + Optimización con programación lineal (la auditoría de ahorro básica ya está entregada en 0.10.1)
 - **F6**: Dashboard Lovelace + Notificaciones + Informes
 
 ## Requisitos
@@ -272,13 +281,17 @@ Ocho sensores: `soc_bateria`, `potencia_bateria` (**+descarga/−carga**), `corr
 
 ### Plan (F3) ✅
 
-`prediccion_consumo` (W + curva p10/p50/p90 + fuente FV), `plan` (acción del tramo + plan completo + ahorro estimado), `ahorro_estimado_hoy` (€, teórico) y `switch.festivo_hoy`.
+`prediccion_consumo` (W + curva p10/p50/p90 + fuente FV), `plan` (acción del tramo + plan completo + ahorro estimado), `ahorro_estimado_hoy` (€, teórico) y `switch.festivo_hoy` (persistente durante el día; auto-off al cambiar de día).
 
 ### Control (F4) ✅
 
 - `switch.*_control_activo` — habilitador del control real, **default OFF**. Con OFF todo se simula (dry-run) y se audita; con ON se escribe bajo salvaguardas. 3 fallos de verificación → OFF automático + notificación persistente (reactivación manual).
 - `sensor.*_estado_control` (diagnóstico) — `inactivo` (switch OFF) / `dry_run` (ON pero la acción actual se simula por gradual) / `activo` (escribiendo de verdad) / `fallback_bloqueado` (requiere intervención). Atributos: motivo, fallos consecutivos, escrituras de la última hora, último verify, modo manual.
 - **Ocho `number` calientes** — escriben en `entry.data` y disparan recálculo del plan en ≤ 60 s: `precio_max_compra`, `precio_min_venta`, `margen_arbitraje`, `soc_min`, `soc_max`, `potencia_max_carga`, `potencia_max_descarga`, `eficiencia_round_trip`.
+
+### Auditoría de ahorro (0.10.1) ✅
+
+- `sensor.*_ahorro_efectivo_hoy` (€) — ahorro real del día: `coste_sin_bateria − coste_real`, tramo a tramo, con el precio efectivo 2.0TD de cada tramo. Atributos (`desglose`): `coste_sin_bateria_eur`, `coste_real_eur`, `descarga_bateria_kwh`, `carga_bateria_kwh`, `red_importada_kwh`, `red_exportada_kwh`. Se actualiza con cada ciclo de telemetría, persiste en `hass.storage` y se reinicia cada día.
 
 ## Servicios
 
@@ -452,11 +465,12 @@ optimizador-bateria-omie/
 │       ├── predictor_consumo.py     # F3: perfil estadístico + Solcast
 │       ├── planificador.py          # F3: PlanificadorGreedy (puro)
 │       ├── coordinador_plan.py      # F3: CoordinadorPlan
-│       ├── entidades_plan.py        # F3: predicción, plan, ahorro estimado, festivo
+│       ├── entidades_plan.py        # F3: predicción, plan, ahorro estimado, festivo (persistente) + ahorro efectivo (0.10.1)
+│       ├── auditoria.py             # 0.10.1: AuditoriaAhorro (ahorro real tramo a tramo, .storage)
 │       ├── executor.py              # F4: EjecutorControl + EscritorSolarman (servicios Solarman)
 │       ├── entidades_control.py     # F4: switch control_activo, 8 numbers, sensor estado_control
 │       ├── number.py                # F4: plataforma number
-│       └── tests/                   # Suites F1 (62) + F2 + F3 + F4 (executor, force_mode, entidades_control, tarifa_entry_data)
+│       └── tests/                   # Suites F1 (62) + F2 + F3 + F4 (executor, force_mode, entidades_control, tarifa_entry_data) + auditoría (0.10.1)
 ├── hacs.json
 ├── README.md
 └── docs/

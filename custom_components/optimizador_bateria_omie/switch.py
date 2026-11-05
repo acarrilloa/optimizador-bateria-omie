@@ -22,7 +22,7 @@ async def async_setup_entry(
 ) -> None:
     """Añade el switch de festivo manual y el de control activo."""
     datos = hass.data[DOMAIN][entry.entry_id]
-    entidades = [SwitchFestivoHoy(datos["coordinador_plan"], hass)]
+    entidades = [SwitchFestivoHoy(datos["coordinador_plan"])]
     if "executor" in datos:
         entidades.append(SwitchControlActivo(datos["executor"]))
     async_add_entities(entidades)

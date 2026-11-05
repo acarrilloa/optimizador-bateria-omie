@@ -7,6 +7,7 @@ Todas comparten el dispositivo de F1/F2 y se repintan por callback del
 
 import logging
 from dataclasses import asdict
+from datetime import datetime
 from typing import Any
 
 from homeassistant.components.sensor import (
@@ -17,6 +18,9 @@ from homeassistant.components.sensor import (
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.const import UnitOfPower
 from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.event import async_track_time_change
+from homeassistant.helpers.restore_state import RestoreEntity
+from homeassistant.helpers.storage import Store
 
 from custom_components.optimizador_bateria_omie.const import (
     ATTR_FUENTE,
@@ -32,11 +36,6 @@ from custom_components.optimizador_bateria_omie.coordinador_plan import (
 from custom_components.optimizador_bateria_omie.predictor_consumo import (
     PercentilesTramo,
 )
-
-from homeassistant.helpers.event import async_track_time_change
-from homeassistant.helpers.restore_state import RestoreEntity
-from homeassistant.helpers.storage import Store
-from datetime import datetime
 
 STORE_KEY_FESTIVO = f"{DOMAIN}/festivo_hoy"
 SENSOR_AHORRO_EFECTIVO_HOY = f"{DOMAIN}_ahorro_efectivo_hoy"
@@ -216,10 +215,14 @@ class SwitchFestivoHoy(SwitchEntity, RestoreEntity):
     _attr_has_entity_name = True
     _attr_icon = "mdi:calendar-remove"
 
-    def __init__(self, coordinador: CoordinadorPlan, hass) -> None:
+    def __init__(self, coordinador: CoordinadorPlan) -> None:
+        """Inicializa con el coordinador del plan.
+
+        El ``Store`` se crea en ``async_added_to_hass``: no se tiene
+        ``hass`` en construcción y así se mantiene la firma original.
+        """
         self._coordinador = coordinador
-        self.hass = hass
-        self._store = Store(hass, 1, STORE_KEY_FESTIVO)
+        self._store: Store | None = None
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -233,6 +236,7 @@ class SwitchFestivoHoy(SwitchEntity, RestoreEntity):
     async def async_added_to_hass(self) -> None:
         """Restaura el estado y registra el reset diario."""
         await super().async_added_to_hass()
+        self._store = Store(self.hass, 1, STORE_KEY_FESTIVO)
         datos = await self._store.async_load()
         hoy = datetime.now().date().isoformat()
         if datos and datos.get("fecha") == hoy and datos.get("festivo"):
@@ -246,14 +250,21 @@ class SwitchFestivoHoy(SwitchEntity, RestoreEntity):
             )
         )
 
+    def _repintar(self) -> None:
+        """Repinta el estado si la entidad ya está registrada en HA."""
+        if self.hass is not None:
+            self.async_write_ha_state()
+
     async def _reset_diario(self, now=None) -> None:
         """Al cambiar de día, apaga el switch automáticamente."""
+        if self._store is None:
+            return
         datos = await self._store.async_load()
         hoy = datetime.now().date().isoformat()
         if datos and datos.get("fecha") != hoy:
             await self._store.async_save({"festivo": False, "fecha": None})
             await self._coordinador.async_set_festivo_hoy(False)
-            self.async_write_ha_state()
+            self._repintar()
 
     @property
     def is_on(self) -> bool:
@@ -261,14 +272,17 @@ class SwitchFestivoHoy(SwitchEntity, RestoreEntity):
 
     async def async_turn_on(self, **kwargs) -> None:
         hoy = datetime.now().date().isoformat()
-        await self._store.async_save({"festivo": True, "fecha": hoy})
+        if self._store is not None:
+            await self._store.async_save({"festivo": True, "fecha": hoy})
         await self._coordinador.async_set_festivo_hoy(True)
-        self.async_write_ha_state()
+        self._repintar()
 
     async def async_turn_off(self, **kwargs) -> None:
-        await self._store.async_save({"festivo": False, "fecha": None})
+        if self._store is not None:
+            await self._store.async_save({"festivo": False, "fecha": None})
         await self._coordinador.async_set_festivo_hoy(False)
-        self.async_write_ha_state()
+        self._repintar()
+
 
 class SensorAhorroEfectivoHoy(SensorEntity):
     """Ahorro real medido del día (vs. coste sin batería)."""
@@ -278,7 +292,7 @@ class SensorAhorroEfectivoHoy(SensorEntity):
     _attr_name = "Ahorro efectivo hoy"
     _attr_native_unit_of_measurement = "€"
     _attr_device_class = SensorDeviceClass.MONETARY
-    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+    _attr_state_class = SensorStateClass.TOTAL
     _attr_icon = "mdi:currency-eur"
 
     def __init__(self, auditoria) -> None:

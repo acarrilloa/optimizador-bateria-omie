@@ -82,7 +82,7 @@ def coordinador_precio():
         for i in range(96)
     ]
     c.datos.precios_manana = None
-    c.modelo_tarifa.obtener_precio_efectivo = lambda p, f: p
+    c.modelo_tarifa.obtener_precio_efectivo = lambda p, f, festivo_manual=False: p
     c.async_add_listener = MagicMock(return_value=MagicMock())
     return c
 

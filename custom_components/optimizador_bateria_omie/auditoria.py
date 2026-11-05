@@ -3,7 +3,7 @@
 
 import logging
 from dataclasses import asdict, dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from homeassistant.helpers.storage import Store
 
@@ -41,7 +41,7 @@ class AuditoriaAhorro:
 
     async def async_cargar(self) -> None:
         datos = await self._store.async_load()
-        hoy = datetime.now().date().isoformat()
+        hoy = datetime.now().astimezone().date().isoformat()
         if datos and datos.get("fecha") == hoy:
             self._dia = AcumuladoDia(
                 **{k: v for k, v in datos.items() if k != "ultimo_tramo"}
@@ -51,13 +51,19 @@ class AuditoriaAhorro:
             self._dia = AcumuladoDia(fecha=hoy)
 
     async def async_actualizar(self, ahora: datetime) -> None:
-        """Llamado en cada ciclo de telemetría."""
-        hoy = ahora.date().isoformat()
+        """Llamado en cada ciclo de telemetría.
+
+        ``ahora`` puede venir en UTC; ``precios_hoy`` está indexado por
+        día local (00:00 local = tramo 0), por lo que el día y el tramo
+        se calculan siempre en hora local.
+        """
+        ahora_local = ahora.astimezone()
+        hoy = ahora_local.date().isoformat()
         if self._dia is None or self._dia.fecha != hoy:
             self._dia = AcumuladoDia(fecha=hoy)
             self._ultimo_tramo = None
 
-        tramo_actual = ahora.hour * 4 + ahora.minute // 15
+        tramo_actual = ahora_local.hour * 4 + ahora_local.minute // 15
         if self._ultimo_tramo == tramo_actual:
             return
 

@@ -3,6 +3,7 @@
 
 import importlib
 import logging
+from datetime import UTC, datetime
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
@@ -64,8 +65,6 @@ from custom_components.optimizador_bateria_omie.telemetria import (
     CoordinadorTelemetria,
     GestorValidacion,
 )
-
-from datetime import UTC, datetime
 
 _LOGGER = logging.getLogger(__name__)
 

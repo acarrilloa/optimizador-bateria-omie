@@ -31,6 +31,7 @@ Prioridad de estrategia: **autoconsumo + arbitraje cuando convenga**.
 - **F2 completada**: telemetría de 8 sensores (SOC, potencia, corriente, consumo, FV, temperatura inversor, temperatura batería, familia validada) leyendo de la integración Solarman vía `ha_entities`. La vía `solarman_modbus` está implementada y probada pero **no es operativa** con el datalogger actual.
 - **F3 completada (0.9.0)**: predicción de consumo por perfil estadístico del recorder (p10/p50/p90 por tramo × tipo de día), previsión FV con **Solcast preferente** y fallback por día al perfil, planificador greedy en `dry_run` (sin escrituras), sensores `prediccion_consumo` / `plan` / `ahorro_estimado_hoy`, `switch.festivo_hoy`, servicio `regenerate_plan` y todos los parámetros editables por `reconfigure`. En **revisión manual de 1 semana** antes de F4.
 - **F4 completada (0.10.0)**: `executor.py` escribe en los registros de control (210/211/230/232/217/218 del `registers.yaml`) vía los servicios `solarman.write_*` con write-verify por relectura (`read_holding_registers`), rate limiter (12/h), watchdog, guard dinámico de potencia contratada (95 %/100 %), bloqueo por fallo del inversor, modo gradual (solo CARGA_RED en valle), fallback con `persistent_notification`, auditoría JSONL en `config/optimizador_bateria_omie/`, servicios `force_mode`/`release_manual`, `switch.control_activo` (default OFF → dry-run forzado), 8 `number` calientes y sensor diagnóstico `estado_control`. Deuda #5 (tarifa en `entry.data`) resuelta. **Primera activación real pendiente del usuario** (valle nocturno, observada contra la APP Solarman).
+- **F4.5 (0.10.1) — auditoría de ahorro efectivo (anticipada de F5)**: `auditoria.py` (`AuditoriaAhorro`) acumula tramo a tramo (15 min, hora local) el coste real vs. coste sin batería con el precio efectivo 2.0TD; expone `sensor.*_ahorro_efectivo_hoy` con desglose (descarga/carga, red importada/exportada) y persiste en `hass.storage`. Simplificaciones: exportación neteada a precio de importación, potencia del tramo aproximada por la lectura de cierre, sin pérdidas de descarga. Además, `switch.festivo_hoy` ahora persiste el estado el mismo día, se auto-apaga al cambiar de día y con `festivo_manual=True` fuerza valle en el precio efectivo del plan.
 
 ---
 
@@ -379,7 +380,7 @@ Fichero: `executor.py`.
 | `sensor.*_plan` | acción y potencia del tramo actual | ✅ F3 |
 | `sensor.*_ahorro_estimado_hoy` | € ahorrados estimados | ✅ F3 |
 | `switch.*_festivo_hoy` | marca manual festivo/vacaciones | ✅ F3 |
-| `sensor.*_ahorro_real_hoy` | € ahorrados reales (auditoría) | 🚧 F5 |
+| `sensor.*_ahorro_efectivo_hoy` | € ahorrados reales (auditoría, con desglose) | ✅ 0.10.1 |
 | `sensor.*_forecast_quality` | MAPE del backtest | 🚧 F5 |
 | `switch.*_control_activo` | habilita escritura (default OFF → dry-run forzado) | ✅ F4 |
 | `number.*_precio_max_compra` | umbral de compra (0–1 €/kWh) | ✅ F4 |
@@ -430,7 +431,8 @@ Peajes, cargos, impuestos y potencia contratada en `entry.data` (`ConfiguracionT
 | **F2 — Telemetría** | `ClienteSolarman` (preparado) + `MapaRegistros` + `registers.yaml` + `CoordinadorTelemetria` (`ha_entities` operativo) + `probe_registers` + **8 sensores** | ✅ **completada** (0.8.10) | SOC, potencia y temperaturas operativos; convención Deye confirmada; automatización del ventilador funcionando |
 | **F3 — Predicción v1 + Planner greedy** | `historico.py` + `predictor_consumo.py` (perfil + Solcast) + `planificador.py` (greedy) + `coordinador_plan.py` + 3 sensores + `switch.festivo_hoy` + servicio `regenerate_plan` | ✅ **completada** (0.9.0) | Plan diario plausible 1 semana en `dry_run` (revisión manual en curso) |
 | **F4 — Control** | `executor.py` (`EscritorSolarman` + `EjecutorControl`) con write-verify, rate limiter, watchdog, guard dinámico, bloqueo por fallo, gradual, fallback, auditoría JSONL, `force_mode`/`release_manual`, `switch.control_activo` + 8 `number` + `sensor.estado_control`; deuda #5 resuelta | ✅ **completada** (0.10.0) | 1 semana sin errores con `control_activo=on` en gradual; solo carga en valle; escrituras verificadas contra la APP; **primera activación real pendiente del usuario** |
-| **F5 — ML + LP** | Forecaster ML + LP + banda p90 + auditoría + reentrenamiento | 🚧 pendiente | MAPE < 20 %; ahorro real medible |
+| **F4.5 — Auditoría de ahorro (anticipada de F5)** | `auditoria.py` (`AuditoriaAhorro`) + `sensor.ahorro_efectivo_hoy` + festivo persistente con auto-off diario | ✅ **completada** (0.10.1) | Ahorro real del día visible y coherente con la tarifa efectiva; simplificaciones documentadas |
+| **F5 — ML + LP** | Forecaster ML + LP + banda p90 + reentrenamiento + refinado de la auditoría (precio de excedentes, perfil real por tramo) | 🚧 pendiente | MAPE < 20 %; ahorro real medible |
 | **F6 — Pulido** | Dashboard, notificaciones, informes | 🚧 pendiente | 30 días sin intervención |
 
 ---
@@ -506,7 +508,8 @@ optimizador-bateria-omie/
 │       ├── predictor_consumo.py     # F3: perfil + Solcast
 │       ├── planificador.py          # F3: greedy
 │       ├── coordinador_plan.py      # F3: coordinator del plan
-│       ├── entidades_plan.py        # F3: sensores de plan y ahorro
+│       ├── entidades_plan.py        # F3: plan y ahorro + 0.10.1: festivo persistente, ahorro efectivo
+│       ├── auditoria.py             # 0.10.1: AuditoriaAhorro (ahorro real del día)
 │       ├── executor.py              # F4: EscritorSolarman + EjecutorControl
 │       ├── entidades_control.py     # F4: switch.control_activo, 8 numbers, sensor estado
 │       ├── number.py                # F4: plataforma number
