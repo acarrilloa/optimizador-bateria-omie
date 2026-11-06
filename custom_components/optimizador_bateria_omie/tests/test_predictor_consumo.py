@@ -219,10 +219,12 @@ class TestTipoDia:
     def test_festivo_hoy_solo_aplica_a_hoy(self, hass):
         predictor = _predictor(hass)
         assert predictor.tipo_dia(HOY, festivo_hoy=True) == "finde"
-        if HOY.weekday() < 5:
-            assert (
-                predictor.tipo_dia(MANANA, festivo_hoy=True) == "laborable"
-            )
+        # ``festivo_hoy`` no debe alterar el tipo de día de mañana,
+        # sea cual sea el día del calendario en que se ejecute el test
+        assert (
+            predictor.tipo_dia(MANANA, festivo_hoy=True)
+            == predictor.tipo_dia(MANANA, festivo_hoy=False)
+        )
 
 
 class TestPerfil:

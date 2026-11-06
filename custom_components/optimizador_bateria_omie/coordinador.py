@@ -74,7 +74,12 @@ class CoordinadorDatosOmie(DataUpdateCoordinator):
 
             try:
                 precios_manana = await self.cliente_omie.obtener_precios_del_dia(manana)
-            except Exception:  # noqa: BLE001
+            except Exception as e:  # noqa: BLE001
+                _LOGGER.warning(
+                    "Sin precios de mañana %s (%s: %s); horizonte limitado a hoy. "
+                    "Publicación D+1 esperable ~13:45 hora local",
+                    manana.isoformat(), type(e).__name__, e,
+                )
                 precios_manana = None
 
             precios_efectivos_hoy = [

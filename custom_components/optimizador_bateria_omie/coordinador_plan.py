@@ -270,6 +270,11 @@ class CoordinadorPlan:
         self._plan = plan
         self._prediccion_hoy = prediccion_hoy
         self._prediccion_manana = prediccion_manana
+        if precios_manana is None:
+            plan.motivos.append(
+                "sin precios de mañana: horizonte limitado a hoy "
+                "(publicación D+1 esperable ~13:45 hora local)"
+            )
         _LOGGER.info(
             "Plan recalculado (motivo: %s): %d tramos, estado %s, "
             "ahorro estimado %.3f €",
