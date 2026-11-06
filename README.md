@@ -16,12 +16,12 @@
 ### Fase F1 (Implementada) ✅
 
 - **Obtención de precios OMIE a 15 min** vía los sensores de plantilla `sensor.omie_precios_de_es_{ayer,hoy,manana}` (creados con la integración oficial OMIE `omie.get_prices_for_date`).
-- **Fallback REData** (`api.preciodelaluz.es`) si los sensores de plantilla no tienen datos, con timeout de 10 s y 2 reintentos con backoff.
+- **Fallback web oficial de OMIE** (`www.omie.es`, página day-ahead con `period=15`, serie SSR «Precio marginal español» en €/MWh) si los sensores de plantilla no tienen datos — p. ej. cuando la integración aún no ha refrescado su sensor de mañana tras la publicación D+1 (~13:45 hora local).
 - **Caché en disco** por día (`cache/YYYY-MM-DD.json`), validada a **92, 96 o 100 tramos** (días con cambio horario). Sobrevive a reinicios; limpieza automática según `dias_cache` (arranque + job diario 04:30).
 - **Precio efectivo**: spot + peajes + cargos + impuestos 2.0TD (valores por defecto de `tarifa.py`, editables por *Reconfigurar* desde F4 — deuda #5 resuelta).
 - **Clasificación de tramos por período 2.0TD** (`valle` / `llano` / `punta`) según hora local, con fines de semana y festivos nacionales = valle todo el día.
 - **Cinco sensores** (los `entity_id` de la instalación de referencia):
-  - `sensor.inversor_optimizador_bateria_omie_precio_actual` — precio del tramo actual en €/kWh; atributo `fuente` (`omie`, `redata`, `desconocida`).
+  - `sensor.inversor_optimizador_bateria_omie_precio_actual` — precio del tramo actual en €/kWh; atributo `fuente` (`omie`, `omie_web`, `desconocida`).
   - `sensor.inversor_optimizador_bateria_omie_precio_efectivo` — precio con peajes, cargos e impuestos.
   - `sensor.inversor_optimizador_bateria_omie_precio_clasificacion` — `valle` / `llano` / `punta` por período 2.0TD.
   - `sensor.inversor_optimizador_bateria_omie_precio_estadisticas` — estado = **mediana** del día; atributos `min`, `max`, `mediana`, `fuente`, `ts_actualizacion`.
@@ -48,7 +48,7 @@ Calcula un **plan por tramos de 15 min** priorizando autoconsumo y aplicando arb
 - **Previsión de FV con Solcast PV Forecast como fuente preferente** (`sensor.solcast_pv_forecast_forecast_today` / `_forecast_tomorrow`, atributo `detailedForecast`, mapeo 30→15 min), con el perfil estadístico como fallback.
 - **`PlanificadorGreedy`** (función pura, determinista): autoconsumo siempre; `CARGA_RED` en tramos baratos (bajo umbral y bajo la mediana del día; precio ≤ 0 → carga máxima); `VENTA_RED` solo si el ciclo compensa la eficiencia round-trip + margen; restricción dura de **5,75 kW** de importación.
 - **Replanificación**: precios nuevos, cambio de tramo (15 min), desviación SOC > 10 %, o servicio `regenerate_plan`.
-- **Cuatro entidades**: `prediccion_consumo` (W + curva p10/p50/p90), `plan` (acción del tramo + plan completo + ahorro estimado), `ahorro_estimado_hoy` (€, teórico) y `switch.festivo_hoy`.
+- **Cuatro entidades**: `prediccion_consumo` (W + curva p10/p50/p90), `plan` (acción del tramo + plan pendiente desde el actual + ahorro estimado), `ahorro_estimado_hoy` (€, teórico) y `switch.festivo_hoy`.
 - Parámetros del plan editables por *Reconfigurar* **y en caliente** vía las entidades `number` de F4, con recálculo del plan en ≤ 60 s.
 
 ### Fase F4 (Completada) ✅ — Executor de control del inversor
@@ -88,7 +88,7 @@ Anticipa parte de la auditoría prevista para F5: mide el **ahorro real** acumul
 - **Integración oficial OMIE** instalada y con la plantilla `precios_omie.yaml` activa (ver [Dependencias de F1](#dependencias-de-f1-la-plantilla-de-precios)).
 - **Telemetría (F2) y control (F4)**: integración oficial **Solarman** instalada y funcionando con sus **servicios de escritura y lectura de registros** (v25.08.16 o superior). Para el modo alternativo `solarman_modbus` (opcional, innecesario para F4): `pysolarmanv5` (ya en `manifest.json`).
 - **F3 (opcional pero recomendado)**: integración **Solcast PV Forecast** para la previsión de FV; sin ella se usa el perfil estadístico.
-- **Opcional**: acceso a internet para el fallback REData.
+- **Opcional**: acceso a internet para el fallback de la web de OMIE.
 
 ## Dependencias de F1: la plantilla de precios
 
@@ -187,7 +187,7 @@ Todos los parámetros son editables en **Configuración > Dispositivos y servici
 
 | Parámetro | Tipo | Valor por defecto | Descripción |
 |---|---|---|---|
-| `fuente_prioritaria` | selección | `omie` | Fuente de precios: `omie`, `redata` |
+| `fuente_prioritaria` | selección | `omie` | Fuente de precios: `omie` (el fallback de la web oficial de OMIE es siempre automático) |
 | `usar_cache` | booleano | `true` | Usar la caché en disco |
 | `dias_cache` | número | `7` | Días de retención de la caché (1–30) |
 
@@ -200,7 +200,7 @@ Todos los parámetros son editables en **Configuración > Dispositivos y servici
 | `intervalo_telemetria_s` | número | `30` | Intervalo de polling del inversor (10–300 s) |
 | `ip` / `puerto` / `serie` | texto/número | datalogger | Solo relevantes con `solarman_modbus` |
 
-> **Sin `esios` ni token ESIOS**: la fuente de fallback de precios es únicamente REData. ESIOS queda pendiente para fases posteriores.
+> **Sin `esios` ni token ESIOS**: la fuente de fallback de precios es únicamente la web oficial de OMIE. ESIOS queda pendiente para fases posteriores.
 
 ### Parámetros del plan (F3) ✅
 
@@ -269,7 +269,7 @@ Los `entity_id` de abajo son los de la instalación de referencia (`sensor.inver
 
 | Sensor | Estado | Atributos |
 |---|---|---|
-| `precio_actual` | Precio del tramo actual en €/kWh (4 dec.) o `unknown` | `fuente` (`omie`, `redata`, `desconocida`) |
+| `precio_actual` | Precio del tramo actual en €/kWh (4 dec.) o `unknown` | `fuente` (`omie`, `omie_web`, `desconocida`) |
 | `precio_efectivo` | `(spot + peaje + cargo) × (1+IE) × (1+IVA)` | — |
 | `precio_clasificacion` | `valle` / `llano` / `punta` por **período 2.0TD** (no percentiles) | — |
 | `precio_estadisticas` | **Mediana** del día en €/kWh | `min`, `max`, `mediana`, `fuente`, `ts_actualizacion` |
@@ -281,7 +281,7 @@ Ocho sensores: `soc_bateria`, `potencia_bateria` (**+descarga/−carga**), `corr
 
 ### Plan (F3) ✅
 
-`prediccion_consumo` (W + curva p10/p50/p90 + fuente FV), `plan` (acción del tramo + plan completo + ahorro estimado), `ahorro_estimado_hoy` (€, teórico) y `switch.festivo_hoy` (persistente durante el día; auto-off al cambiar de día).
+`prediccion_consumo` (W + curva p10/p50/p90 desde el tramo actual + fuente FV), `plan` (acción del tramo + plan pendiente desde el actual + ahorro estimado), `ahorro_estimado_hoy` (€, teórico) y `switch.festivo_hoy` (persistente durante el día; auto-off al cambiar de día).
 
 ### Control (F4) ✅
 
@@ -414,7 +414,7 @@ automation:
 - Verifica que el archivo `manifest.json` está correcto
 
 ### Los sensores de precios muestran "unavailable"
-- Verifica que la integración OMIE está instalada y la plantilla `precios_omie.yaml` activa (o que hay conexión para el fallback REData)
+- Verifica que la integración OMIE está instalada y la plantilla `precios_omie.yaml` activa (o que hay conexión para el fallback de la web de OMIE)
 - Consulta los logs de Home Assistant: si todas las fuentes fallan, los sensores quedan `unavailable` (no se inventan valores)
 
 ### Los precios no coinciden con OMIE

@@ -3,7 +3,7 @@
 Todas comparten el dispositivo de F1/F2 y se repintan por callback del
 ``CoordinadorPlan`` (sin polling). Ninguna toca el inversor.
 """
-# versión 0.10.1
+# versión 0.10.2
 
 import logging
 from dataclasses import asdict
@@ -47,8 +47,15 @@ ATTR_FUENTE_FV = "fuente_fv"
 
 def _curva(
     tramos: list[PercentilesTramo | None],
+    desde: int = 0,
 ) -> list[dict[str, Any]]:
-    """Curva p10/p50/p90 por tramo para atributos de la UI."""
+    """Curva p10/p50/p90 por tramo para atributos de la UI.
+
+    ``desde`` recorta los tramos ya pasados de hoy (D-attr): los
+    atributos deben caber en el límite de 16 KB del recorder y con el
+    horizonte hoy+mañana reventaría. Las etiquetas ``hora`` conservan
+    el índice real del tramo.
+    """
     return [
         {
             "hora": f"{i // 4:02d}:{(i % 4) * 15:02d}",
@@ -57,6 +64,23 @@ def _curva(
             "p90": round(t.p90) if t else None,
         }
         for i, t in enumerate(tramos or [])
+        if i >= desde
+    ]
+
+
+def _tramo_actual_index() -> int:
+    """Índice del tramo de 15 min en curso (hora local)."""
+    ahora = datetime.now().astimezone()
+    return ahora.hour * 4 + ahora.minute // 15
+
+
+def _tramos_pendientes(tramos: list) -> list:
+    """Tramos de hoy desde el actual (incluido) + todos los futuros."""
+    hoy = datetime.now().astimezone().date()
+    idx = _tramo_actual_index()
+    return [
+        t for t in tramos
+        if t.fecha > hoy or (t.fecha == hoy and t.tramo >= idx)
     ]
 
 
@@ -119,12 +143,13 @@ class SensorPrediccionConsumo(EntidadBasePlan):
         """Curvas de consumo y FV de hoy y mañana con su fuente."""
         hoy = self._coordinador.prediccion_hoy
         manana = self._coordinador.prediccion_manana
+        desde = _tramo_actual_index()
         atributos: dict[str, Any] = {
-            "consumo_hoy": _curva(hoy.consumo) if hoy else [],
+            "consumo_hoy": _curva(hoy.consumo, desde) if hoy else [],
             ATTR_FUENTE: "perfil",
         }
         if hoy:
-            atributos["fv_hoy"] = _curva(hoy.fv)
+            atributos["fv_hoy"] = _curva(hoy.fv, desde)
             atributos[ATTR_FUENTE_FV + "_hoy"] = hoy.fuente_fv
         if manana:
             atributos["consumo_manana"] = _curva(manana.consumo)
@@ -153,7 +178,12 @@ class SensorPlan(EntidadBasePlan):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        """Plan completo, SOC previsto y ahorro estimado."""
+        """Plan pendiente (desde el tramo actual), SOC y ahorro estimado.
+
+        Solo se publican los tramos de hoy desde el actual y todos los
+        de días futuros: publicar las 192 ranuras completas excede el
+        límite de 16 KB del recorder y los pasados no aportan.
+        """
         plan = self._coordinador.plan
         if plan is None:
             return {"estado": "sin_plan"}
@@ -164,7 +194,7 @@ class SensorPlan(EntidadBasePlan):
             "ahorro_estimado": self._coordinador.ahorro_estimado_hoy(),
             "coste_sin_plan_eur": plan.coste_sin_plan_eur,
             "coste_con_plan_eur": plan.coste_con_plan_eur,
-            "plan": [asdict(t) for t in plan.tramos],
+            "plan": [asdict(t) for t in _tramos_pendientes(plan.tramos)],
         }
         if tramo is not None:
             atributos["tramo_actual"] = tramo.hora

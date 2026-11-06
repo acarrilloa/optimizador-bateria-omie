@@ -72,18 +72,16 @@ def fixture_precios_omie_92():
 
 
 @pytest.fixture
-def fixture_respuesta_redata():
-    """Respuesta de REData: dict con clave "data" y tramos en el formato
-    start/price que espera el normalizador."""
-    base = medianoche_local()
-    data = [
-        {
-            "start": (base + timedelta(minutes=15 * i)).isoformat(),
-            "price": round(0.12 + i * 0.0015, 6),
-        }
-        for i in range(96)
-    ]
-    return {"data": data}
+def fixture_html_omie_web():
+    """HTML SSR de omie.es (day-ahead) con la serie Highcharts de 96
+    precios «Precio marginal español» en €/MWh, replicando los
+    escapes literales (``\\"`` y ``\\\\u00f1``) de la página real."""
+    precios = ",".join(f"{264.68 + i * 0.5:.2f}" for i in range(96))
+    return (
+        '{"path":{}},\\"series\\":[{\\"name\\":\\"Precio marginal espa\\u00f1ol\\",'
+        '\\"id \\":\\"Precio marginal espa\\u00f1ol\\",\\"type\\":\\"column\\",'
+        f'\\"data\\":[{precios}]}}'
+    )
 
 
 @pytest.fixture

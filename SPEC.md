@@ -32,6 +32,7 @@ Prioridad de estrategia: **autoconsumo + arbitraje cuando convenga**.
 - **F3 completada (0.9.0)**: predicción de consumo por perfil estadístico del recorder (p10/p50/p90 por tramo × tipo de día), previsión FV con **Solcast preferente** y fallback por día al perfil, planificador greedy en `dry_run` (sin escrituras), sensores `prediccion_consumo` / `plan` / `ahorro_estimado_hoy`, `switch.festivo_hoy`, servicio `regenerate_plan` y todos los parámetros editables por `reconfigure`. En **revisión manual de 1 semana** antes de F4.
 - **F4 completada (0.10.0)**: `executor.py` escribe en los registros de control (210/211/230/232/217/218 del `registers.yaml`) vía los servicios `solarman.write_*` con write-verify por relectura (`read_holding_registers`), rate limiter (12/h), watchdog, guard dinámico de potencia contratada (95 %/100 %), bloqueo por fallo del inversor, modo gradual (solo CARGA_RED en valle), fallback con `persistent_notification`, auditoría JSONL en `config/optimizador_bateria_omie/`, servicios `force_mode`/`release_manual`, `switch.control_activo` (default OFF → dry-run forzado), 8 `number` calientes y sensor diagnóstico `estado_control`. Deuda #5 (tarifa en `entry.data`) resuelta. **Primera activación real pendiente del usuario** (valle nocturno, observada contra la APP Solarman).
 - **F4.5 (0.10.1) — auditoría de ahorro efectivo (anticipada de F5)**: `auditoria.py` (`AuditoriaAhorro`) acumula tramo a tramo (15 min, hora local) el coste real vs. coste sin batería con el precio efectivo 2.0TD; expone `sensor.*_ahorro_efectivo_hoy` con desglose (descarga/carga, red importada/exportada) y persiste en `hass.storage`. Simplificaciones: exportación neteada a precio de importación, potencia del tramo aproximada por la lectura de cierre, sin pérdidas de descarga. Además, `switch.festivo_hoy` ahora persiste el estado el mismo día, se auto-apaga al cambiar de día y con `festivo_manual=True` fuerza valle en el precio efectivo del plan.
+- **0.10.2 — fuentes de precios y atributos**: fallback REData (dominio muerto) eliminado; nuevo fallback con la **web oficial de OMIE** (serie SSR day-ahead, €/MWh→€/kWh), garantizando los precios de mañana aunque la integración de plantilla no haya refrescado su sensor. Atributos de `plan` y `prediccion_consumo` compactados a los tramos pendientes (límite de 16 KB del recorder). Aviso de motivo en el plan cuando falta el día D+1, WARNING con la causa y fix de deprecación `device_registry.devices`.
 
 ---
 
@@ -62,7 +63,7 @@ Prioridad de estrategia: **autoconsumo + arbitraje cuando convenga**.
 - Precios del mercado diario español (MDA) con resolución de **15 minutos** para hoy y mañana, en €/kWh.
 - Fuentes en cascada:
   1. **Sensores de plantilla** `sensor.omie_precios_de_es_{ayer,hoy,manana}`, creados con `omie.get_prices_for_date` (§5.1).
-  2. **REData** (`https://api.preciodelaluz.es/v1/prices?date=...`) como fallback.
+  2. **Web oficial de OMIE** (`www.omie.es/es/market-results/daily/daily-market/day-ahead-price?date=...&period=15&scope=daily`): la página incrusta en el HTML (SSR) la serie Highcharts «Precio marginal español» con los 96 precios en €/MWh (92/100 en DST). Fallback cuando la plantilla no tiene datos (p. ej. sensor de mañana sin refrescar tras la publicación D+1 ~13:45). El dominio REData anterior (`api.preciodelaluz.es`) desapareció y fue eliminado en 0.10.2.
 - **Caché en disco** por día (`cache/YYYY-MM-DD.json`), validada a **92, 96 o 100 tramos** (días DST).
 - **Refresco**: coordinador cada 15 min + triggers de la plantilla (13:35 y 00:05 CET) + arranque HA.
 - **Expuesto**: precio del tramo actual, precio efectivo, clasificación por **período 2.0TD** (valle/llano/punta) y estadísticas (mín/máx/mediana) + curva completa de precios efectivos del día.
@@ -126,7 +127,7 @@ Prioridad de estrategia: **autoconsumo + arbitraje cuando convenga**.
 flowchart TD
   subgraph Fuentes
     OMIE["Integración OMIE + plantilla<br/>(omie_precios_de_es_*)"]
-    REDATA["REData (fallback)"]
+    OMIE_WEB["Web oficial OMIE (fallback)<br/>day-ahead SSR, €/MWh"]
     SOLAR_OFICIAL["Integración oficial Solarman<br/>(162 entidades, v25.08.16)"]
     SOLAR_MODBUS["Datalogger (Modbus TCP)<br/>no disponible, requiere gateway RS485"]
     HIST["Histórico: HA recorder + InfluxDB"]
@@ -145,7 +146,7 @@ flowchart TD
     EXECUTOR["Executor 🚧 F4<br/>(via servicios Solarman)"]
   end
   OMIE --> PRICE
-  REDATA --> PRICE
+  OMIE_WEB --> PRICE
   SOLAR_OFICIAL --> CTEL
   SOLAR_OFICIAL -.-> EXECUTOR
   SOLAR_MODBUS -.-> TELEM
@@ -172,7 +173,7 @@ sequenceDiagram
   participant C as CoordinadorDatosOmie
   participant CL as ClienteOmie
   participant P as Plantilla OMIE (sensores)
-  participant R as REData (fallback)
+  participant R as Web OMIE (fallback)
   participant Cache as cache/*.json
   participant E as Entidades (5 sensores)
   T->>C: _async_update_data
@@ -242,7 +243,7 @@ stateDiagram-v2
 ### 5.1 `ClienteOmie` ✅ F1
 
 Fichero: `cliente_omie.py`.
-- `obtener_precios_del_dia(fecha)`: Caché → OMIE → REData → normalización.
+- `obtener_precios_del_dia(fecha)`: Caché → OMIE (plantilla) → web oficial OMIE (SSR) → normalización.
 - `limpiar_cache_antigua(dias)`: Borra `cache/*.json` con `mtime > dias * 86400`, en executor.
 - **Caché válida** si tiene **92, 96 o 100 ranuras** (DST).
 - **Zona horaria**: selección de sensor por **fecha local**.
@@ -407,7 +408,7 @@ Fichero: `executor.py`.
 
 | Parámetro | Tipo | Default | Valores |
 |---|---|---|---|
-| `fuente_prioritaria` | selección | `omie` | `omie`, `redata` |
+| `fuente_prioritaria` | selección | `omie` | `omie` (fallback web OMIE automático) |
 | `usar_cache` | bool | `true` | — |
 | `dias_cache` | int | `7` | 1–30 |
 | `telemetry_source` | selección | **`ha_entities`** | `ha_entities`, `solarman_modbus` |
@@ -469,7 +470,7 @@ Peajes, cargos, impuestos y potencia contratada en `entry.data` (`ConfiguracionT
 - `tests/test_solarman_client.py` — familia por parámetro, troceado ≤16, backoff, signed.
 - `tests/test_telemetria.py` — `ha_entities`, `UpdateFailed` sin familia.
 - `tests/test_probe_registers.py` — tolerancia ±2 %, plausibilidad, reset.
-- `tests/test_mantenimiento.py` — limpieza de caché, backoff REData.
+- `tests/test_mantenimiento.py` — limpieza de caché.
 
 ### 10.3 F3 ✅ (implementados)
 
@@ -582,7 +583,7 @@ optimizador-bateria-omie/
 | # | Elemento | Fase | Estado |
 |---|---|---|---|
 | 1 | Limpieza de caché (`dias_cache`) | F2 | ✅ **resuelta** |
-| 2 | Backoff/timeout REData | F2 | ✅ **resuelta** |
+| 2 | Backoff/timeout fallback (REData; eliminado en 0.10.2 por dominio muerto) | F2 | ✅ **resuelta** |
 | 3 | Cliente directo `api.omie.es` (15 min) | F2 (opcional) | 🚧 condicionada |
 | 4 | `OptionsFlow` | ~~F3~~ → **absorbida por `reconfigure` en F2** | ✅ **resuelta** |
 | 5 | Mover tarifa a `entry.data` | F4 | ✅ **resuelta** — `ConfiguracionTarifa.desde_entry` con defaults confirmados; `potencia_contratada` (W) única fuente |
@@ -597,7 +598,7 @@ optimizador-bateria-omie/
 ## 13. Fuentes y referencias
 
 - **OMIE** — https://www.omie.es. Nota *go-live MTU15* (1 oct 2025).
-- **REData** — `api.preciodelaluz.es`.
+- **Web oficial de OMIE** — `www.omie.es` (day-ahead, serie SSR en €/MWh; fallback desde 0.10.2).
 - **pysolarmanv5** — https://pysolarmanv5.readthedocs.io (v3.0.6+).
 - **Manuales Deye**:
   - `Deye sunsynk modbus.pdf`.

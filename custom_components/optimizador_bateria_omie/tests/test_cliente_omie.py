@@ -48,14 +48,14 @@ async def test_precios_desde_integracion_omie(
 
 
 @pytest.mark.asyncio
-async def test_fallback_redata(cliente_omie, fixture_respuesta_redata):
-    """Sin la integración OMIE, se usa REData con la sesión de HA."""
+async def test_fallback_omie_web(cliente_omie, fixture_html_omie_web):
+    """Sin la integración OMIE, se scrappea la web oficial de OMIE."""
     cliente_omie.hass.config.components = []
 
-    # AsyncMock: soporta el protocolo "async with" y await response.json()
+    # AsyncMock: soporta el protocolo "async with" y await response.text()
     response = AsyncMock()
     response.status = 200
-    response.json = AsyncMock(return_value=fixture_respuesta_redata)
+    response.text = AsyncMock(return_value=fixture_html_omie_web)
     response.__aenter__.return_value = response
     session = MagicMock()
     session.get = MagicMock(return_value=response)
@@ -67,8 +67,16 @@ async def test_fallback_redata(cliente_omie, fixture_respuesta_redata):
         ranuras = await cliente_omie.obtener_precios_del_dia(hoy_local())
 
     assert len(ranuras) == 96
-    assert all(r.fuente == "redata" for r in ranuras)
-    assert ranuras[0].precio_eur_kwh == pytest.approx(0.12)
+    assert all(r.fuente == "omie_web" for r in ranuras)
+    # 264.68 €/MWh → 0.26468 €/kWh
+    assert ranuras[0].precio_eur_kwh == pytest.approx(0.26468)
+    # La primera ranura es la medianoche local del día (en UTC)
+    medianoche_local_utc = (
+        datetime.now().astimezone().replace(
+            hour=0, minute=0, second=0, microsecond=0
+        ).astimezone(UTC)
+    )
+    assert ranuras[0].fecha_hora_utc == medianoche_local_utc
 
 
 @pytest.mark.asyncio
@@ -122,7 +130,7 @@ async def test_cache_incompleta_se_descarta(
 
 @pytest.mark.asyncio
 async def test_todas_las_fuentes_fallan(cliente_omie):
-    """Sin OMIE y con REData caído se lanza ErrorFuenteOmie."""
+    """Sin OMIE y con la web de OMIE caída se lanza ErrorFuenteOmie."""
     cliente_omie.hass.config.components = []
 
     with patch(

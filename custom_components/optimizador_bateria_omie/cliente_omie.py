@@ -1,14 +1,25 @@
 """Cliente para obtener precios de OMIE."""
-# versión 0.8.1
+# versión 0.10.2
 
 import json
 import logging
+import re
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 from custom_components.optimizador_bateria_omie.const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
+
+OMIE_WEB_URL = (
+    "https://www.omie.es/es/market-results/daily/daily-market/"
+    "day-ahead-price"
+)
+OMIE_WEB_UA = (
+    "Mozilla/5.0 (compatible; optimizador-bateria-omie; "
+    "+https://github.com/acarrilloa/optimizador-bateria-omie)"
+)
+OMIE_TRAMOS_ESPERADOS = (92, 96, 100)
 
 
 class ConfiguracionOmie:
@@ -111,24 +122,62 @@ class ClienteOmie:
         _LOGGER.info("Sensor %s sin datos de precios", sensor_entity_id)
         return []
 
-    async def _obtener_desde_redata(self, fecha: date) -> list:
-        """Obtiene precios desde REData (fallback)."""
+    async def _obtener_desde_omie_web(self, fecha: date) -> list:
+        """Precios de la web oficial de OMIE (fallback de la integración).
+
+        La página day-ahead de omie.es incrusta en el HTML (SSR) la serie
+        Highcharts «Precio marginal español» con 96 precios en €/MWh
+        (92/100 en cambio de hora). Es la misma fuente que la integración
+        de HA, pero sin depender de que esta haya refrescado su sensor.
+        """
         from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-        url = f"https://api.preciodelaluz.es/v1/prices?date={fecha.strftime('%Y-%m-%d')}"
+        url = (
+            f"{OMIE_WEB_URL}?date={fecha.strftime('%Y-%m-%d')}"
+            "&period=15&scope=daily"
+        )
         session = async_get_clientsession(self.hass)
-
-        async with session.get(url) as response:
+        async with session.get(
+            url, headers={"User-Agent": OMIE_WEB_UA}
+        ) as response:
             if response.status != 200:
-                raise ErrorFuenteOmie(f"REData status {response.status}")
-            data = await response.json()
+                raise ErrorFuenteOmie(
+                    f"OMIE web status {response.status}"
+                )
+            html = await response.text()
 
-        if isinstance(data, dict) and "data" in data:
-            return data["data"]
-        if isinstance(data, list):
-            return data
-        _LOGGER.error("Formato de REData inesperado: %s", type(data).__name__)
-        return []
+        idx = html.find("Precio marginal espa")
+        if idx == -1:
+            raise ErrorFuenteOmie(
+                "OMIE web: serie de precio español no encontrada "
+                "(posiblemente aún sin publicar)"
+            )
+        m = re.search(
+            r'\\?"data\\?"\s*:\s*\[([0-9][0-9.,\s]*)\]',
+            html[idx : idx + 3000],
+        )
+        if not m:
+            raise ErrorFuenteOmie("OMIE web: precios no encontrados en HTML")
+        precios_mwh = [float(v) for v in m.group(1).split(",") if v.strip()]
+        if len(precios_mwh) not in OMIE_TRAMOS_ESPERADOS:
+            raise ErrorFuenteOmie(
+                f"OMIE web: {len(precios_mwh)} tramos "
+                f"(esperados {OMIE_TRAMOS_ESPERADOS}); "
+                "posiblemente aún sin publicar"
+            )
+
+        # €/MWh → €/kWh; ranuras de 15 min desde las 00:00 hora local
+        inicio = datetime(
+            fecha.year, fecha.month, fecha.day,
+            tzinfo=datetime.now().astimezone().tzinfo,
+        )
+        return [
+            {
+                "start": (inicio + timedelta(minutes=15 * i)).isoformat(),
+                "price": precios_mwh[i] / 1000.0,
+            }
+            for i in range(len(precios_mwh))
+        ]
 
     def _normalizar_a_15min(self, datos: list, fecha: date) -> list:
         """Normaliza datos OMIE ({start, end, price}) a 96 Ranuras."""
@@ -262,14 +311,14 @@ class ClienteOmie:
 
         if not datos:
             try:
-                datos = await self._obtener_desde_redata(fecha)
-                fuente = "redata"
+                datos = await self._obtener_desde_omie_web(fecha)
+                fuente = "omie_web"
                 _LOGGER.info(
-                    "Datos obtenidos de REData: %d intervalos",
+                    "Datos obtenidos de la web de OMIE: %d intervalos",
                     len(datos or []),
                 )
             except Exception as e:  # noqa: BLE001
-                _LOGGER.warning("REData falló: %s", e)
+                _LOGGER.warning("OMIE web falló: %s (%s)", e, type(e).__name__)
                 datos = None
 
         # Descartar si todos los precios son 0.0 (fuente devolvió "vacío")

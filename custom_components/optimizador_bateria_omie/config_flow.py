@@ -127,7 +127,7 @@ def formatear_festivos(valor: Any) -> str:
 CONFIG_SCHEMA = vol.Schema(
     {
         vol.Required("fuente_prioritaria", default=DEFAULT_FUENTE_PRIORITARIA): vol.In(
-            ["omie", "redata"]
+            ["omie"]
         ),
         vol.Required("usar_cache", default=DEFAULT_USAR_CACHE): bool,
         vol.Required("dias_cache", default=DEFAULT_DIAS_CACHE): vol.All(

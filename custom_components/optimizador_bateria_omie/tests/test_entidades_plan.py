@@ -80,7 +80,13 @@ class TestSensorPrediccionConsumo:
         sensor = SensorPrediccionConsumo(coordinador)
 
         attrs = sensor.extra_state_attributes
-        assert len(attrs["consumo_hoy"]) == 96
+        # La curva de hoy se compacta desde el tramo en curso (0.10.2)
+        ahora = datetime.now().astimezone()
+        indice = ahora.hour * 4 + ahora.minute // 15
+        assert len(attrs["consumo_hoy"]) == 96 - indice
+        assert attrs["consumo_hoy"][0]["hora"] == (
+            f"{indice // 4:02d}:{(indice % 4) * 15:02d}"
+        )
         assert attrs["consumo_hoy"][0]["p50"] == 300
         assert attrs["fuente_fv_hoy"] == "solcast"
         assert attrs["fuente"] == "perfil"
