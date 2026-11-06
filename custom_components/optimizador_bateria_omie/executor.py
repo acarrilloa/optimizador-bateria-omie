@@ -126,7 +126,9 @@ class EscritorSolarman:
         from homeassistant.helpers import device_registry as dr
 
         registro = dr.async_get(self.hass)
-        for dispositivo in registro.devices.values():
+        # device_registry.devices como mapping (p. ej. ``.values()``) está
+        # deprecated (HA 2027.9); iterar da directamente los DeviceEntry
+        for dispositivo in registro.devices:
             if any(
                 identificador[0] == DOMINIO_SOLARMAN
                 for identificador in dispositivo.identifiers

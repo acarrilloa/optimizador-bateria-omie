@@ -392,10 +392,16 @@ class TestActivacion:
 
 class TestEscritorSolarman:
     def _hass(self, devices=None):
+        class DevicesFake(dict):
+            """Imita DeviceRegistryItems: iterar da los DeviceEntry."""
+
+            def __iter__(self):
+                return iter(self.values())
+
         h = MagicMock()
         h.services.async_call = AsyncMock()
         registro = MagicMock()
-        registro.devices = dict(devices or {})
+        registro.devices = DevicesFake(devices or {})
         h._dr_devices = registro
         return h
 
