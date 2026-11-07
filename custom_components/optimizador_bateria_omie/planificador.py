@@ -4,16 +4,24 @@ Función **pura y determinista** (D17): ``planificar()`` no toca HA, no
 consulta nada y **nunca escribe en el inversor**. Recorre los tramos de
 hoy (+ mañana si hay precios) en orden cronológico con balance SOC y
 prioriza: (1) autoconsumo, (2) arbitraje de compra si el tramo es
-barato en contexto, (3) arbitraje de venta solo si el ciclo compensa
-tras la eficiencia round-trip, (4) mantener. Precio ≤ 0 → carga desde
-red hasta ``soc_max`` (D9).
+barato en contexto **y el ciclo compensa contra el máximo de precios
+futuro del horizonte** — ``precio/η + margen`` — (0.11.0), (3)
+arbitraje de venta solo si el ciclo compensa tras la eficiencia
+round-trip, (4) mantener. Precio ≤ 0 → carga desde red hasta
+``soc_max`` (D9).
+
+``precio_max_compra`` y ``precio_min_venta`` son **guardarraíles de
+seguridad absolutos** (0.11.0), no criterios de negocio: si el cap de
+compra dispara, el día entero es demasiado caro para cargar aunque el
+ciclo compense; el piso de venta solo evita verter a precios ≈ 0 o
+negativos (la venta de batería la guarda el ``ciclo_compensa``).
 
 La restricción dura de potencia contratada (D10) limita la carga desde
 red: ``min(potencia_max_carga, potencia_contratada − consumo − margen)``,
 nunca negativa. Sin precios → ``sin_precios``; perfil insuficiente →
 plan trivial de solo-autoconsumo (D18). Nada se inventa.
 """
-# versión 0.9.0
+# versión 0.11.0
 
 import logging
 from dataclasses import dataclass, field
@@ -262,11 +270,27 @@ class PlanificadorGreedy:
                 "plan trivial de solo-autoconsumo"
             )
 
+        # Look-ahead de rentabilidad (0.11.0): para cada posición del
+        # horizonte, ``sup[i]`` es el máximo de los precios de las
+        # posiciones estrictamente posteriores. Cargar a ``precio``
+        # solo compensa si ese máximo permite descargar después por
+        # encima de ``precio / eta + margen`` (mismo criterio que el
+        # ``ciclo_compensa`` de la venta, D9.3).
+        precios_horizonte = [
+            p for _, precios_dia, _, _ in dias for p in precios_dia
+        ]
+        n_horizonte = len(precios_horizonte)
+        sup_futuro = [float("-inf")] * (n_horizonte + 1)
+        for i in range(n_horizonte - 1, -1, -1):
+            sup_futuro[i] = max(sup_futuro[i + 1], precios_horizonte[i])
+
         soc = float(soc_actual)
         precio_compra_ciclo: float | None = None  # mínimo de CARGA_RED
+        tramo_global = 0
         for fecha_dia, precios, prediccion, es_hoy in dias:
             mediana_dia = _mediana(precios)
             for tramo in range(len(precios)):
+                tramo_global += 1
                 precio = precios[tramo]
                 consumo_p = prediccion.consumo[tramo]
                 fv_p = prediccion.fv[tramo] if prediccion.fv else None
@@ -324,9 +348,14 @@ class PlanificadorGreedy:
                         and precio > 0
                         and precio <= self.p.precio_max_compra
                         and precio < mediana_dia
+                        # Rentabilidad del ciclo contra el horizonte
+                        and (
+                            sup_futuro[tramo_global]
+                            >= precio / eta + self.p.margen_arbitraje
+                        )
                         and carga_red == 0
                     ):
-                        # Barato en contexto del día
+                        # Barato en contexto del día y ciclo rentable
                         carga_red = max(
                             0.0,
                             min(

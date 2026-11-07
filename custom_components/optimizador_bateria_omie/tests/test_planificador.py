@@ -125,10 +125,31 @@ class TestVallePunta:
         diurnos = [t for t in plan.tramos if t.hora >= "08:00"]
         assert not any(t.accion == ACCION_CARGA_RED for t in diurnos)
 
-    def test_umbral_precio_max_compra(self):
-        """Valle a 0.08 < umbral 0.09 → carga; a 0.095 > umbral → no."""
-        precios = _precios_valle_punta(valle=0.095)
+    def test_tope_seguridad_precio_max_compra(self):
+        """El cap es guardarraíl: valle a 0.6 > tope 0.5 → no carga,
+        aunque el ciclo (0.6/η + margen < punta) compensaría."""
+        precios = _precios_valle_punta(valle=0.6, punta=0.5)
         plan = _planificador().planificar(
+            HOY, precios, None, _prediccion(), None, 20.0
+        )
+        assert not any(t.accion == ACCION_CARGA_RED for t in plan.tramos)
+
+    def test_carga_en_valle_caro_si_ciclo_compensa(self):
+        """Caso de invierno caro (0.11.0): valle a 0.30 y punta a 0.50
+        compensa el round-trip → carga nocturna aunque antes el
+        umbral fijo (0.09) la bloqueaba."""
+        precios = _precios_valle_punta(valle=0.30, punta=0.50)
+        plan = _planificador().planificar(
+            HOY, precios, None, _prediccion(), None, 20.0
+        )
+        nocturnos = [t for t in plan.tramos if t.hora < "08:00"]
+        assert nocturnos[0].accion == ACCION_CARGA_RED
+
+    def test_no_carga_sin_futuro_rentable(self):
+        """Precios descendentes: cada tramo es barato en contexto, pero
+        ningún tramo futuro permite recuperar precio/η + margen."""
+        precios = [round(0.20 - 0.002 * i, 4) for i in range(96)]
+        plan = _planificador(precio_max_compra=0.5).planificar(
             HOY, precios, None, _prediccion(), None, 20.0
         )
         assert not any(t.accion == ACCION_CARGA_RED for t in plan.tramos)

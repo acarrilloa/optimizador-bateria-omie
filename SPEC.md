@@ -33,6 +33,7 @@ Prioridad de estrategia: **autoconsumo + arbitraje cuando convenga**.
 - **F4 completada (0.10.0)**: `executor.py` escribe en los registros de control (210/211/230/232/217/218 del `registers.yaml`) vía los servicios `solarman.write_*` con write-verify por relectura (`read_holding_registers`), rate limiter (12/h), watchdog, guard dinámico de potencia contratada (95 %/100 %), bloqueo por fallo del inversor, modo gradual (solo CARGA_RED en valle), fallback con `persistent_notification`, auditoría JSONL en `config/optimizador_bateria_omie/`, servicios `force_mode`/`release_manual`, `switch.control_activo` (default OFF → dry-run forzado), 8 `number` calientes y sensor diagnóstico `estado_control`. Deuda #5 (tarifa en `entry.data`) resuelta. **Primera activación real pendiente del usuario** (valle nocturno, observada contra la APP Solarman).
 - **F4.5 (0.10.1) — auditoría de ahorro efectivo (anticipada de F5)**: `auditoria.py` (`AuditoriaAhorro`) acumula tramo a tramo (15 min, hora local) el coste real vs. coste sin batería con el precio efectivo 2.0TD; expone `sensor.*_ahorro_efectivo_hoy` con desglose (descarga/carga, red importada/exportada) y persiste en `hass.storage`. Simplificaciones: exportación neteada a precio de importación, potencia del tramo aproximada por la lectura de cierre, sin pérdidas de descarga. Además, `switch.festivo_hoy` ahora persiste el estado el mismo día, se auto-apaga al cambiar de día y con `festivo_manual=True` fuerza valle en el precio efectivo del plan.
 - **0.10.2 — fuentes de precios y atributos**: fallback REData (dominio muerto) eliminado; nuevo fallback con la **web oficial de OMIE** (serie SSR day-ahead, €/MWh→€/kWh), garantizando los precios de mañana aunque la integración de plantilla no haya refrescado su sensor. Atributos de `plan` y `prediccion_consumo` compactados a los tramos pendientes (límite de 16 KB del recorder). Aviso de motivo en el plan cuando falta el día D+1, WARNING con la causa y fix de deprecación `device_registry.devices`.
+- **0.11.0 — arbitraje con rentabilidad explícita**: `CARGA_RED` requiere look-ahead rentable contra el máximo de precio futuro del horizonte (`precio/η + margen`), lo que habilita la carga nocturna en inviernos caros que el umbral fijo (0,09 €/kWh) bloqueaba. `precio_max_compra` (default 0,5) y `precio_min_venta` (default 0,0) pasan a ser guardarraíles absolutos de seguridad, no criterios de negocio. **Ojo**: entradas existentes conservan sus valores almacenados; mover los `number` si se desea adoptar los nuevos defaults.
 
 ---
 
@@ -93,8 +94,8 @@ Prioridad de estrategia: **autoconsumo + arbitraje cuando convenga**.
 
 ### RF-04 — Compra/venta con parámetros ajustables ✅ F4 (guard) 🚧 F5 (LP)
 
-- **Comprar** (cargar desde red) cuando el precio proyectado esté bajo el umbral y bajo el precio medio ponderado de descarga esperada.
-- **Vender** (verter a red) cuando el precio supere el umbral y compense la eficiencia round-trip: `p_venta ≥ p_compra_efectiva / η_round_trip + margen`. Venta al mismo precio que la compra (§5.6).
+- **Comprar** (cargar desde red) cuando el tramo sea barato en contexto (bajo la mediana del día) **y el ciclo compense contra el máximo de precios futuro del horizonte**: `p_descarga_futura_max ≥ p_compra / η_round_trip + margen` (0.11.0, look-ahead); por debajo del tope de seguridad absoluto `precio_max_compra` (default 0,5 €/kWh).
+- **Vender** (verter a red) cuando el precio supere el piso de seguridad `precio_min_venta` (default 0; bloquea negativos) y compense la eficiencia round-trip: `p_venta ≥ p_compra_efectiva / η_round_trip + margen`. Venta al mismo precio que la compra (§5.6).
 - **Restricción dura**: importación total (consumo + carga batería) ≤ **5,75 kW**.
 - Todos los umbrales como entidades `number`/`switch` modificables sin reiniciar. ✅ F4: 8 `number` calientes + guard dinámico (importación vía registro 169 o cálculo derivado; > 95 % → reduce; ≥ 100 % → 0 A).
 
@@ -227,8 +228,8 @@ sequenceDiagram
 ```mermaid
 stateDiagram-v2
   [*] --> Autoconsumo
-  Autoconsumo --> CargaRed : precio <= umbral_compra y SOC < SOC_max
-  Autoconsumo --> VentaRed : precio >= umbral_venta y SOC > SOC_min
+  Autoconsumo --> CargaRed : barato en contexto + ciclo rentable (look-ahead) y SOC < SOC_max
+  Autoconsumo --> VentaRed : precio >= piso_seguridad y ciclo compensa y SOC > SOC_min
   CargaRed --> Autoconsumo : fin de tramo barato o SOC_max alcanzado
   VentaRed --> Autoconsumo : fin de tramo caro o SOC_min alcanzado
   CargaRed --> Fallback : error de comunicacion
@@ -384,8 +385,8 @@ Fichero: `executor.py`.
 | `sensor.*_ahorro_efectivo_hoy` | € ahorrados reales (auditoría, con desglose) | ✅ 0.10.1 |
 | `sensor.*_forecast_quality` | MAPE del backtest | 🚧 F5 |
 | `switch.*_control_activo` | habilita escritura (default OFF → dry-run forzado) | ✅ F4 |
-| `number.*_precio_max_compra` | umbral de compra (0–1 €/kWh) | ✅ F4 |
-| `number.*_precio_min_venta` | umbral de venta | ✅ F4 |
+| `number.*_precio_max_compra` | tope de seguridad de compra (0–1 €/kWh, default 0,5); el negocio lo decide la rentabilidad del ciclo | ✅ F4 |
+| `number.*_precio_min_venta` | piso de seguridad de vertido (default 0; bloquea negativos); la venta de batería la guarda el margen | ✅ F4 |
 | `number.*_margen_arbitraje` | margen mínimo | ✅ F4 |
 | `number.*_soc_min` / `_soc_max` | límites SOC | ✅ F4 |
 | `number.*_potencia_max_carga` / `_descarga` | límites potencia | ✅ F4 |

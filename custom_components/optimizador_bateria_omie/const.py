@@ -69,8 +69,12 @@ CONF_ENTITY_ID_PREVISION_FV_MANANA = "entity_id_prevision_fv_manana"
 DEFAULT_VENTANA_HISTORICO = 28
 DEFAULT_PERMITIR_CARGA_RED = True
 DEFAULT_PERMITIR_VENTA_RED = True
-DEFAULT_PRECIO_MAX_COMPRA = 0.09
-DEFAULT_PRECIO_MIN_VENTA = 0.18
+# Guardarraíles de seguridad (0.11.0): el negocio lo decide la
+# rentabilidad del ciclo (look-ahead) y el margen de arbitraje;
+# estos umbrales solo evitan comprar a precios disparados o verter
+# excedente a precios negativos.
+DEFAULT_PRECIO_MAX_COMPRA = 0.5
+DEFAULT_PRECIO_MIN_VENTA = 0.0
 DEFAULT_MARGEN_ARBITRAJE = 0.015
 DEFAULT_SOC_MIN = 15.0
 DEFAULT_SOC_MAX = 95.0

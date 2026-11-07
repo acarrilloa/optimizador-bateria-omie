@@ -46,7 +46,7 @@ Calcula un **plan por tramos de 15 min** priorizando autoconsumo y aplicando arb
 
 - **`PredictorConsumo`**: perfil estadístico (mediana por tramo × tipo de día: laborable / fin-de-semana-o-festivo) con bootstrap desde el **HA recorder** (28 días configurables), banda p10/p50/p90 y persistencia en disco (recalculado diariamente a las 04:35).
 - **Previsión de FV con Solcast PV Forecast como fuente preferente** (`sensor.solcast_pv_forecast_forecast_today` / `_forecast_tomorrow`, atributo `detailedForecast`, mapeo 30→15 min), con el perfil estadístico como fallback.
-- **`PlanificadorGreedy`** (función pura, determinista): autoconsumo siempre; `CARGA_RED` en tramos baratos (bajo umbral y bajo la mediana del día; precio ≤ 0 → carga máxima); `VENTA_RED` solo si el ciclo compensa la eficiencia round-trip + margen; restricción dura de **5,75 kW** de importación.
+- **`PlanificadorGreedy`** (función pura, determinista): autoconsumo siempre; `CARGA_RED` en tramos baratos en contexto (bajo la mediana del día) **solo si el ciclo compensa contra el máximo de precios futuro del horizonte** (`precio/η + margen`; precio ≤ 0 → carga máxima); `VENTA_RED` solo si el ciclo compensa la eficiencia round-trip + margen; restricción dura de **5,75 kW** de importación.
 - **Replanificación**: precios nuevos, cambio de tramo (15 min), desviación SOC > 10 %, o servicio `regenerate_plan`.
 - **Cuatro entidades**: `prediccion_consumo` (W + curva p10/p50/p90), `plan` (acción del tramo + plan pendiente desde el actual + ahorro estimado), `ahorro_estimado_hoy` (€, teórico) y `switch.festivo_hoy`.
 - Parámetros del plan editables por *Reconfigurar* **y en caliente** vía las entidades `number` de F4, con recálculo del plan en ≤ 60 s.
@@ -210,8 +210,8 @@ Editables por *Reconfigurar* **y en caliente** con las entidades `number` de F4,
 |---|---|---|
 | `ventana_historico_dias` | 28 | Días de recorder para el perfil de consumo (7–90) |
 | `permitir_carga_red` / `permitir_venta_red` | true / true | Arbitraje de compra / venta |
-| `precio_max_compra` | 0.09 €/kWh | Umbral de compra |
-| `precio_min_venta` | 0.18 €/kWh | Umbral de venta |
+| `precio_max_compra` | 0,5 €/kWh | **Tope de seguridad** absoluto de compra: si el precio lo supera, no se carga aunque el ciclo compense (el negocio lo decide la rentabilidad, ver planificador) |
+| `precio_min_venta` | 0,0 €/kWh | **Piso de seguridad** de vertido: evita exportar a precios ≈ 0 o negativos (la venta desde batería la guarda `margen_arbitraje` + round-trip) |
 | `margen_arbitraje` | 0.015 €/kWh | Margen mínimo del ciclo |
 | `soc_min` / `soc_max` | 15 / 95 % | Límites operativos de SOC |
 | `potencia_max_carga` / `potencia_max_descarga` | 5000 / 5000 W | Límites de potencia |
