@@ -292,6 +292,69 @@ class TestCoordinadorTelemetria:
         assert telemetria.produccion_fv is None  # sin entity_id
 
 
+class TestEventoSinTelemetria:
+    """0.11.2: evento de disponibilidad solo en transiciones (0.11.2)."""
+
+    def _coordinador(self, hass, soc_estado: str):
+        gestor = GestorValidacion(hass, store=StoreFake())
+        hass.states.get = MagicMock(
+            side_effect=lambda entity_id: {
+                "sensor.soc": _estado("sensor.soc", soc_estado),
+                "sensor.consumo": _estado("sensor.consumo", "350"),
+            }.get(entity_id)
+        )
+        entry = _entry(
+            {
+                CONF_TELEMETRY_SOURCE: TELEMETRY_SOURCE_HA_ENTITIES,
+                CONF_ENTITY_ID_SOC_BATERIA: "sensor.soc",
+                CONF_ENTITY_ID_CONSUMO_CASA: "sensor.consumo",
+            }
+        )
+        return CoordinadorTelemetria(hass, None, gestor, entry)
+
+    def _eventos(self, hass) -> list:
+        return hass.bus.async_fire.call_args_list
+
+    @pytest.mark.asyncio
+    async def test_primera_observacion_no_dispara(self, hass):
+        """Al arrancar no hay notificación (ni de caída ni de vuelta)."""
+        coordinador = self._coordinador(hass, "73.5")
+        await coordinador._async_update_data()
+        hass.bus.async_fire.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_transiciones_disparan_y_debouncean(self, hass):
+        coordinador = self._coordinador(hass, "73.5")
+        await coordinador._async_update_data()  # 1ª obs: sin evento
+        await coordinador._async_update_data()  # sigue OK: sin evento
+        hass.bus.async_fire.reset_mock()
+
+        # Caída: SOC unavailable → evento disponible=False
+        caido = self._coordinador(hass, "unavailable")
+        caido._telemetria_disponible = True
+        await caido._async_update_data()
+        hass.bus.async_fire.assert_called_once()
+        tipo, datos = hass.bus.async_fire.call_args.args
+        assert tipo == "optimizador_bateria_omie_sin_telemetria"
+        assert datos["disponible"] is False
+
+        # Sigue caído: sin más eventos
+        hass.bus.async_fire.reset_mock()
+        caido2 = self._coordinador(hass, "unavailable")
+        caido2._telemetria_disponible = False
+        await caido2._async_update_data()
+        hass.bus.async_fire.assert_not_called()
+
+        # Recuperación → evento disponible=True
+        hass.bus.async_fire.reset_mock()
+        recuperado = self._coordinador(hass, "73.5")
+        recuperado._telemetria_disponible = False
+        await recuperado._async_update_data()
+        hass.bus.async_fire.assert_called_once()
+        datos = hass.bus.async_fire.call_args.args[1]
+        assert datos["disponible"] is True
+
+
 class TestSensorFamiliaValidada:
     """Tests del sensor diagnóstico (M10)."""
 

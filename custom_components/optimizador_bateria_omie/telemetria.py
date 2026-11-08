@@ -1,5 +1,5 @@
 """Telemetría del inversor: dataclass, Store de validación y coordinador."""
-# versión 0.9.1
+# versión 0.11.2
 
 import logging
 from dataclasses import dataclass
@@ -24,6 +24,7 @@ from custom_components.optimizador_bateria_omie.const import (
     CONF_INTERVALO_TELEMETRIA,
     CONF_TELEMETRY_SOURCE,
     DEFAULT_ENTITY_ID_CORRIENTE_BATERIA,
+    EVENT_SIN_TELEMETRIA,
     SIGNAL_VALIDACION_CAMBIADA,
     STORE_KEY_PROBE,
     TELEMETRY_SOURCE_MODBUS,
@@ -160,11 +161,53 @@ class CoordinadorTelemetria(DataUpdateCoordinator[TelemetriaInversor]):
         self._telemetry_source = entry.data.get(
             CONF_TELEMETRY_SOURCE, TELEMETRY_SOURCE_MODBUS
         )
+        # Última disponibilidad conocida (0.11.2): para disparar el
+        # evento solo en las transiciones, no en cada ciclo
+        self._telemetria_disponible: bool | None = None
 
     @property
     def cliente(self):
         """Cliente Solarman asociado (None si la fuente es ha_entities)."""
         return self._cliente
+
+    def _evaluar_disponibilidad(self, datos) -> None:
+        """Dispara el evento ``EVENT_SIN_TELEMETRIA`` en transiciones.
+
+        ``soc`` es la referencia de disponibilidad: sin él el plan entra
+        en ``sin_telemetria`` aunque otras magnitudes lleguen. El
+        evento lleva ``{"disponible": bool, "motivo": str}`` para que
+        automatizaciones de notificación (móvil) alerten de la caída y
+        de la recuperación del inversor.
+        """
+        disponible = datos is not None and datos.soc is not None
+        # La primera observación no dispara evento: al arrancar HA la
+        # telemetría ya puede estar caída y avisar de "disponible"
+        # tras cada reinicio sería ruido
+        if self._telemetria_disponible is None:
+            self._telemetria_disponible = disponible
+            return
+        if disponible == self._telemetria_disponible:
+            return
+        self._telemetria_disponible = disponible
+        self.hass.bus.async_fire(
+            EVENT_SIN_TELEMETRIA,
+            {
+                "disponible": disponible,
+                "motivo": (
+                    f"telemetría disponible (SOC {datos.soc} %)"
+                    if disponible
+                    else "SOC no disponible: entities Solarman sin "
+                    "datos o inversor desconectado (¿WiFi?)"
+                ),
+            },
+        )
+        if disponible:
+            _LOGGER.info("Telemetría recuperada (%s)", EVENT_SIN_TELEMETRIA)
+        else:
+            _LOGGER.warning(
+                "Telemetría perdida: inversor sin datos (%s)",
+                EVENT_SIN_TELEMETRIA,
+            )
 
     async def _async_update_data(self) -> TelemetriaInversor:
         """Actualiza la telemetría según la fuente configurada."""
@@ -179,8 +222,12 @@ class CoordinadorTelemetria(DataUpdateCoordinator[TelemetriaInversor]):
                     "actual de la APP Solarman, o revisa "
                     "sensor.optimizador_bateria_omie_familia_validada."
                 )
-            return await self._cliente.leer_telemetria(familia)
-        return self._leer_de_ha_entities()
+            telemetria = await self._cliente.leer_telemetria(familia)
+            self._evaluar_disponibilidad(telemetria)
+            return telemetria
+        telemetria = self._leer_de_ha_entities()
+        self._evaluar_disponibilidad(telemetria)
+        return telemetria
 
     def _leer_de_ha_entities(self) -> TelemetriaInversor:
         """Lee la telemetría de entidades de HA existentes.

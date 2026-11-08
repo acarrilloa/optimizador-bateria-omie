@@ -293,6 +293,36 @@ Ocho sensores: `soc_bateria`, `potencia_bateria` (**+descarga/−carga**), `corr
 
 - `sensor.*_ahorro_efectivo_hoy` (€) — ahorro real del día: `coste_sin_bateria − coste_real`, tramo a tramo, con el precio efectivo 2.0TD de cada tramo. Atributos (`desglose`): `coste_sin_bateria_eur`, `coste_real_eur`, `descarga_bateria_kwh`, `carga_bateria_kwh`, `red_importada_kwh`, `red_exportada_kwh`. Se actualiza con cada ciclo de telemetría, persiste en `hass.storage` y se reinicia cada día.
 
+## Alertas: caída de telemetría del inversor (0.11.2)
+
+Si el inversor se desconecta (p. ej. WiFi del Deye caído), el SOC deja de llegar y el plan entra en `sin_telemetria`. El componente dispara el evento **`optimizador_bateria_omie_sin_telemetria`** en cada **transición** (caída y recuperación), con `{"disponible": bool, "motivo": str}`. La primera observación tras arrancar HA no dispara evento (para no notificar en cada reinicio).
+
+Para recibirlo en el móvil, crea esta automatización (sustituye `TU_MOVIL` por tu servicio `notify.mobile_app_*`):
+
+```yaml
+alias: "Batería OMIE: inversor sin telemetría"
+trigger:
+  - platform: event
+    event_type: optimizador_bateria_omie_sin_telemetria
+action:
+  - choose:
+      - conditions: "{{ trigger.event.data.disponible }}"
+        sequence:
+          - action: notify.mobile_app_TU_MOVIL
+            data:
+              title: "Batería OMIE"
+              message: "Telemetría del inversor recuperada ✅"
+    default:
+      - action: notify.mobile_app_TU_MOVIL
+        data:
+          title: "Batería OMIE"
+          message: >-
+            Inversor SIN telemetría (¿WiFi caído?): {{ trigger.event.data.motivo }}.
+            El plan seguirá en modo autoconsumo y sin escrituras hasta que vuelva.
+```
+
+> **Consejo**: si el WiFi del inversor se cae con frecuencia, revisa el intervalo de sondeo de la integración Solarman (que es quien interroga al datalogger); el intervalo `intervalo_telemetria` de esta integración solo lee estados de HA y no genera tráfico al inversor.
+
 ## Servicios
 
 ### `probe_registers` (F2) ✅
