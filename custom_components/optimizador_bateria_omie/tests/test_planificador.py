@@ -316,6 +316,33 @@ class TestVenta:
         )
         assert any(t.accion == ACCION_VENTA_RED for t in plan.tramos)
 
+    def test_venta_solo_en_pico_del_horizonte(self):
+        """0.11.1: comprado barato de noche (0.10), la venta no puede
+        ocurrir en valle aunque supere compra/η+margen: espera al pico
+        del día (0.40), donde la energía ya no vale más guardada."""
+        precios = _precios_valle_punta(valle=0.10, punta=0.40)
+        prediccion = _prediccion(consumo_w=300.0, fv_w=0.0)
+        plan = _planificador().planificar(
+            HOY, precios, None, prediccion, None, 20.0
+        )
+        ventas = [t for t in plan.tramos if t.accion == ACCION_VENTA_RED]
+        # Vende sí o sí en el arranque de la punta (08:00)
+        assert ventas
+        assert all(t.hora >= "08:00" for t in ventas)
+
+    def test_no_importa_y_verte_en_el_mismo_tramo(self):
+        """0.11.1: CARGA_RED y VENTA_RED son excluyentes — nada de
+        comprar de red para verter a red en el mismo tramo."""
+        precios = [round(0.10 + 0.003 * i, 4) for i in range(96)]
+        prediccion = _prediccion(consumo_w=300.0, fv_w=0.0)
+        plan = _planificador().planificar(
+            HOY, precios, None, prediccion, None, 50.0
+        )
+        for t in plan.tramos:
+            assert not (
+                t.potencia_carga_red_w > 0 and t.potencia_venta_red_w > 0
+            )
+
 
 class TestSignoDeye:
     def test_convencion_mas_descarga_menos_carga(self):

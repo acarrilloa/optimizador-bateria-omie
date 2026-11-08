@@ -7,21 +7,24 @@ prioriza: (1) autoconsumo, (2) arbitraje de compra si el tramo es
 barato en contexto **y el ciclo compensa contra el máximo de precios
 futuro del horizonte** — ``precio/η + margen`` — (0.11.0), (3)
 arbitraje de venta solo si el ciclo compensa tras la eficiencia
-round-trip, (4) mantener. Precio ≤ 0 → carga desde red hasta
+round-trip **y el tramo es un pico del horizonte** — ``precio >=
+máximo futuro``; nunca en el mismo tramo que una carga desde red
+(0.11.1) —, (4) mantener. Precio ≤ 0 → carga desde red hasta
 ``soc_max`` (D9).
 
 ``precio_max_compra`` y ``precio_min_venta`` son **guardarraíles de
 seguridad absolutos** (0.11.0), no criterios de negocio: si el cap de
 compra dispara, el día entero es demasiado caro para cargar aunque el
 ciclo compense; el piso de venta solo evita verter a precios ≈ 0 o
-negativos (la venta de batería la guarda el ``ciclo_compensa``).
+negativos (la venta de batería la guarda el ``ciclo_compensa`` y la
+regla de pico).
 
 La restricción dura de potencia contratada (D10) limita la carga desde
 red: ``min(potencia_max_carga, potencia_contratada − consumo − margen)``,
 nunca negativa. Sin precios → ``sin_precios``; perfil insuficiente →
 plan trivial de solo-autoconsumo (D18). Nada se inventa.
 """
-# versión 0.11.0
+# versión 0.11.1
 
 import logging
 from dataclasses import dataclass, field
@@ -368,7 +371,13 @@ class PlanificadorGreedy:
                         )
 
                     # Venta: excedente FV directo (sin pérdida de ciclo)
-                    # o batería comprada si el ciclo compensa (D9.3)
+                    # o batería comprada si el ciclo compensa (D9.3).
+                    # 0.11.1: (a) nunca en el mismo tramo que CARGA_RED
+                    # — nada de importar para verter en red — y (b) la
+                    # batería solo se vende en tramos de pico del
+                    # horizonte (precio >= máximo futuro): si luego hay
+                    # algo igual o más caro, la energía vale más
+                    # guardada para el autoconsumo.
                     excedente_sin_cargar = max(
                         0.0, -deficit - carga_auto
                     )
@@ -378,6 +387,7 @@ class PlanificadorGreedy:
                     puede_vender = (
                         self.p.permitir_venta_red
                         and precio >= self.p.precio_min_venta
+                        and carga_red == 0
                     )
                     ciclo_compensa = (
                         precio_compra_ciclo is not None
@@ -393,6 +403,7 @@ class PlanificadorGreedy:
                         and ciclo_compensa
                         and venta_disponible > 0
                         and excedente_sin_cargar == 0
+                        and precio >= sup_futuro[tramo_global]
                     ):
                         venta_potencia += min(
                             venta_disponible,

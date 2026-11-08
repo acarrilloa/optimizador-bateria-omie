@@ -34,6 +34,7 @@ Prioridad de estrategia: **autoconsumo + arbitraje cuando convenga**.
 - **F4.5 (0.10.1) — auditoría de ahorro efectivo (anticipada de F5)**: `auditoria.py` (`AuditoriaAhorro`) acumula tramo a tramo (15 min, hora local) el coste real vs. coste sin batería con el precio efectivo 2.0TD; expone `sensor.*_ahorro_efectivo_hoy` con desglose (descarga/carga, red importada/exportada) y persiste en `hass.storage`. Simplificaciones: exportación neteada a precio de importación, potencia del tramo aproximada por la lectura de cierre, sin pérdidas de descarga. Además, `switch.festivo_hoy` ahora persiste el estado el mismo día, se auto-apaga al cambiar de día y con `festivo_manual=True` fuerza valle en el precio efectivo del plan.
 - **0.10.2 — fuentes de precios y atributos**: fallback REData (dominio muerto) eliminado; nuevo fallback con la **web oficial de OMIE** (serie SSR day-ahead, €/MWh→€/kWh), garantizando los precios de mañana aunque la integración de plantilla no haya refrescado su sensor. Atributos de `plan` y `prediccion_consumo` compactados a los tramos pendientes (límite de 16 KB del recorder). Aviso de motivo en el plan cuando falta el día D+1, WARNING con la causa y fix de deprecación `device_registry.devices`.
 - **0.11.0 — arbitraje con rentabilidad explícita**: `CARGA_RED` requiere look-ahead rentable contra el máximo de precio futuro del horizonte (`precio/η + margen`), lo que habilita la carga nocturna en inviernos caros que el umbral fijo (0,09 €/kWh) bloqueaba. `precio_max_compra` (default 0,5) y `precio_min_venta` (default 0,0) pasan a ser guardarraíles absolutos de seguridad, no criterios de negocio. **Ojo**: entradas existentes conservan sus valores almacenados; mover los `number` si se desea adoptar los nuevos defaults.
+- **0.11.1 — venta disciplinada**: detectado en producción que el greedy vendía la batería al primer tramo que superaba `compra_mín/η + margen` (vacándola hasta `soc_min` en llano/noche y dejando la casa importando en punta) e incluso combinaba `CARGA_RED` + `VENTA_RED` en el mismo tramo (importar para verter). Correcciones: venta de batería solo en tramos **pico del horizonte** (precio ≥ máximo futuro, la energía vale más guardada si luego hay algo más caro) y exclusión mutua compra/venta por tramo.
 
 ---
 
@@ -95,7 +96,7 @@ Prioridad de estrategia: **autoconsumo + arbitraje cuando convenga**.
 ### RF-04 — Compra/venta con parámetros ajustables ✅ F4 (guard) 🚧 F5 (LP)
 
 - **Comprar** (cargar desde red) cuando el tramo sea barato en contexto (bajo la mediana del día) **y el ciclo compense contra el máximo de precios futuro del horizonte**: `p_descarga_futura_max ≥ p_compra / η_round_trip + margen` (0.11.0, look-ahead); por debajo del tope de seguridad absoluto `precio_max_compra` (default 0,5 €/kWh).
-- **Vender** (verter a red) cuando el precio supere el piso de seguridad `precio_min_venta` (default 0; bloquea negativos) y compense la eficiencia round-trip: `p_venta ≥ p_compra_efectiva / η_round_trip + margen`. Venta al mismo precio que la compra (§5.6).
+- **Vender** (verter a red) cuando el precio supere el piso de seguridad `precio_min_venta` (default 0; bloquea negativos), compense la eficiencia round-trip — `p_venta ≥ p_compra_efectiva / η_round_trip + margen` — **y el tramo sea un pico del horizonte** (`p_venta ≥ máximo de precios futuro`; 0.11.1) — si más adelante hay algo igual o más caro, la energía vale más guardada para autoconsumo. `CARGA_RED` y `VENTA_RED` son **excluyentes por tramo**: nunca se importa de red para verter a red. Venta al mismo precio que la compra (§5.6).
 - **Restricción dura**: importación total (consumo + carga batería) ≤ **5,75 kW**.
 - Todos los umbrales como entidades `number`/`switch` modificables sin reiniciar. ✅ F4: 8 `number` calientes + guard dinámico (importación vía registro 169 o cálculo derivado; > 95 % → reduce; ≥ 100 % → 0 A).
 
@@ -229,7 +230,7 @@ sequenceDiagram
 stateDiagram-v2
   [*] --> Autoconsumo
   Autoconsumo --> CargaRed : barato en contexto + ciclo rentable (look-ahead) y SOC < SOC_max
-  Autoconsumo --> VentaRed : precio >= piso_seguridad y ciclo compensa y SOC > SOC_min
+  Autoconsumo --> VentaRed : ciclo compensa + pico del horizonte (nunca con CargaRed) y SOC > SOC_min
   CargaRed --> Autoconsumo : fin de tramo barato o SOC_max alcanzado
   VentaRed --> Autoconsumo : fin de tramo caro o SOC_min alcanzado
   CargaRed --> Fallback : error de comunicacion
