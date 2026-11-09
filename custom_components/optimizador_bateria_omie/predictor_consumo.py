@@ -29,6 +29,7 @@ from custom_components.optimizador_bateria_omie.const import (
     FUENTE_FV_NONE,
     FUENTE_FV_PERFIL,
     FUENTE_FV_SOLCAST,
+    TRAMOS_POR_DIA,
 )
 from custom_components.optimizador_bateria_omie.historico import (
     FuenteHistoricoRecorder,
@@ -38,7 +39,6 @@ from custom_components.optimizador_bateria_omie.tarifa import ModeloTarifa
 
 _LOGGER = logging.getLogger(__name__)
 
-TRAMOS_POR_DIA = 96
 MIN_DIAS_PERFIL = 3
 # Solcast publica energía en kWh por periodo de 30 min → potencia media W
 KWH_30MIN_A_W = 2000.0

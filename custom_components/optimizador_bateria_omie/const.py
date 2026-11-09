@@ -69,6 +69,9 @@ CONF_ENTITY_ID_PREVISION_FV_MANANA = "entity_id_prevision_fv_manana"
 DEFAULT_VENTANA_HISTORICO = 28
 # Evento de disponibilidad de telemetría (0.11.2): data = {disponible, motivo}
 EVENT_SIN_TELEMETRIA = f"{DOMAIN}_sin_telemetria"
+# Tramos de 15 min por día (F5: compartido ML/LP/perfil; en const para
+# evitar importaciones circulares predictor ↔ forecast_ml)
+TRAMOS_POR_DIA = 96
 DEFAULT_PERMITIR_CARGA_RED = True
 DEFAULT_PERMITIR_VENTA_RED = True
 # Guardarraíles de seguridad (0.11.0): el negocio lo decide la
