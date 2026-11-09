@@ -23,6 +23,9 @@ from homeassistant.const import UnitOfPower
 from homeassistant.helpers.entity import DeviceInfo, EntityCategory
 
 from custom_components.optimizador_bateria_omie.const import (
+    ALGORITMO_GREEDY,
+    ALGORITMO_LP,
+    CONF_ALGORITMO_PLANNER,
     CONF_EFICIENCIA_ROUND_TRIP,
     CONF_MARGEN_ARBITRAJE,
     CONF_POTENCIA_MAX_CARGA,
@@ -51,6 +54,7 @@ from custom_components.optimizador_bateria_omie.const import (
     SENSOR_ESTADO_CONTROL,
     SENSOR_FORECAST_QUALITY,
     SWITCH_CONTROL_ACTIVO,
+    SWITCH_USAR_LP,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -95,6 +99,49 @@ class SwitchControlActivo(SwitchEntity):
     async def async_turn_off(self, **kwargs) -> None:
         """Fuerza el dry-run (ninguna escritura)."""
         await self._ejecutor.async_set_control_activo(False)
+
+
+class SwitchUsarLP(SwitchEntity):
+    """Selección en caliente del planner: LP (ON) o greedy (OFF, D-F5.2).
+
+    Conmuta ``entry.data["algoritmo_planificador"]`` y recalcula el
+    plan al instante; si el LP fallara, el CoordinadorPlan recurre al
+    greedy solo (nada que hacer aquí).
+    """
+
+    _attr_unique_id = SWITCH_USAR_LP
+    _attr_name = "Usar planificador LP"
+    _attr_has_entity_name = True
+    _attr_icon = "mdi:math-compass"
+
+    def __init__(self, entry, coordinador_plan) -> None:
+        """Inicializa con la entrada y el CoordinadorPlan."""
+        self._entry = entry
+        self._coordinador_plan = coordinador_plan
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        """Dispositivo compartido."""
+        return _device_info()
+
+    @property
+    def is_on(self) -> bool:
+        return (
+            self._entry.data.get(CONF_ALGORITMO_PLANNER, ALGORITMO_GREEDY)
+            == ALGORITMO_LP
+        )
+
+    async def async_turn_on(self, **kwargs) -> None:
+        """Conmuta a LP y recalcula (≤ 1 s esperado con CBC)."""
+        self._entry.data[CONF_ALGORITMO_PLANNER] = ALGORITMO_LP
+        await self._coordinador_plan.async_recalcular("algoritmo_lp")
+        self.async_write_ha_state()
+
+    async def async_turn_off(self, **kwargs) -> None:
+        """Vuelve al greedy y recalcula."""
+        self._entry.data[CONF_ALGORITMO_PLANNER] = ALGORITMO_GREEDY
+        await self._coordinador_plan.async_recalcular("algoritmo_greedy")
+        self.async_write_ha_state()
 
 
 class NumberParametroPlanner(NumberEntity):

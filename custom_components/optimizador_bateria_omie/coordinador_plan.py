@@ -20,6 +20,9 @@ from homeassistant.helpers.event import (
 )
 
 from custom_components.optimizador_bateria_omie.const import (
+    ALGORITMO_GREEDY,
+    ALGORITMO_LP,
+    CONF_ALGORITMO_PLANNER,
     CONF_DESVIACION_SOC_REPLAN,
     CONF_ENTITY_ID_SOC_BATERIA,
     DEFAULT_DESVIACION_SOC_REPLAN,
@@ -262,16 +265,7 @@ class CoordinadorPlan:
         # los number de F4 mutan entry.data en caliente (D16) y deben
         # aplicar en ≤ 60 s sin recrear la entrada.
         self.planificador.p = ParametrosPlanner.desde_entry(self.entry)
-        plan = self.planificador.planificar(
-            hoy,
-            self._precios_efectivos(
-                datos.precios_hoy, festivo_manual=self._festivo_hoy
-            ) or [],
-            precios_manana,
-            prediccion_hoy,
-            prediccion_manana,
-            soc,
-        )
+        plan = self._planificar_con_motor(hoy, precios_manana, prediccion_hoy, prediccion_manana, soc)
         self._plan = plan
         self._prediccion_hoy = prediccion_hoy
         self._prediccion_manana = prediccion_manana
@@ -290,6 +284,53 @@ class CoordinadorPlan:
         )
         self._notificar()
         return plan
+
+    def _planificar_con_motor(
+        self, hoy, precios_manana, prediccion_hoy, prediccion_manana, soc
+    ) -> Plan:
+        """Planes con el motor configurado (D-F5.2: greedy | lp).
+
+        El LP es un import perezoso (PuLP solo se carga si se usa) y
+        cualquier fallo suyo recalcula con el greedy: nunca sin plan.
+        """
+        datos = self.coordinador_precio.datos
+        precios_hoy = self._precios_efectivos(
+            datos.precios_hoy, festivo_manual=self._festivo_hoy
+        ) or []
+        algoritmo = self.entry.data.get(
+            CONF_ALGORITMO_PLANNER, ALGORITMO_GREEDY
+        )
+        if algoritmo == ALGORITMO_LP:
+            try:
+                # pylint: disable=import-outside-toplevel
+                from custom_components.optimizador_bateria_omie.planner_lp import (
+                    ErrorPlannerLP,
+                    PlanificadorLP,
+                )
+
+                lp = PlanificadorLP(self.planificador.p)
+                plan = lp.planificar(
+                    hoy, precios_hoy, precios_manana,
+                    prediccion_hoy, prediccion_manana, soc,
+                )
+                if plan.estado == "ok":
+                    plan.motivos.append("planificador LP")
+                    return plan
+                # Estado degradado (sin telemetría/precios): el greedy
+                # genera el mismo mensaje; se le deja el turno
+                _LOGGER.warning(
+                    "LP sin datos completos (%s); greedy", plan.estado
+                )
+            except ErrorPlannerLP as err:
+                _LOGGER.warning(
+                    "Planner LP sin solución (%s); recalculando greedy", err
+                )
+            except Exception:
+                _LOGGER.exception("Planner LP falló; recalculando greedy")
+        return self.planificador.planificar(
+            hoy, precios_hoy, precios_manana,
+            prediccion_hoy, prediccion_manana, soc,
+        )
 
     # ─── Accesores ───
 

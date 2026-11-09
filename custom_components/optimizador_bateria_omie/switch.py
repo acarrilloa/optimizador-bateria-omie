@@ -9,6 +9,7 @@ from homeassistant.core import HomeAssistant
 from custom_components.optimizador_bateria_omie.const import DOMAIN
 from custom_components.optimizador_bateria_omie.entidades_control import (
     SwitchControlActivo,
+    SwitchUsarLP,
 )
 from custom_components.optimizador_bateria_omie.entidades_plan import (
     SwitchFestivoHoy,
@@ -25,4 +26,6 @@ async def async_setup_entry(
     entidades = [SwitchFestivoHoy(datos["coordinador_plan"])]
     if "executor" in datos:
         entidades.append(SwitchControlActivo(datos["executor"]))
+    # F5-U3: selección en caliente del planner (greedy | LP)
+    entidades.append(SwitchUsarLP(entry, datos["coordinador_plan"]))
     async_add_entities(entidades)
