@@ -426,6 +426,8 @@ class TestEscritorSolarman:
 
     @pytest.mark.asyncio
     async def test_payload_con_device_configurado(self):
+        """0.11.5: escritura individual vía FC 16 (bloque de un valor)
+        porque el Deye rechaza la FC 6 con ACKNOWLEDGE."""
         hass = self._hass()
         escritor = EscritorSolarman(hass, "device-x")
 
@@ -434,20 +436,18 @@ class TestEscritorSolarman:
         llamada = hass.services.async_call.call_args
         assert llamada.args == (
             "solarman",
-            # Generación actual de la integración Solarman (25.x);
-            # has_service truthy del mock elige el nombre nuevo
-            "write_holding_register",
-            {"device": "device-x", "register": 210, "value": 50},
+            "write_multiple_holding_registers",
+            {"device": "device-x", "register": 210, "values": [50]},
         )
         assert llamada.kwargs == {"blocking": True}
 
     @pytest.mark.asyncio
     async def test_generacion_legada_de_servicios(self):
-        """Solo expone write_single_register → usa el legado."""
+        """Solo expone write_multiple_registers (legado) → lo usa."""
         hass = self._hass()
         hass.services.has_service = MagicMock(
             side_effect=lambda dominio, nombre: (
-                nombre == "write_single_register"
+                nombre == "write_multiple_registers"
             )
         )
         escritor = EscritorSolarman(hass, "device-x")
@@ -455,7 +455,7 @@ class TestEscritorSolarman:
         await escritor.escribir(210, 50)
 
         tipo, servicio, _ = hass.services.async_call.call_args.args
-        assert (tipo, servicio) == ("solarman", "write_single_register")
+        assert (tipo, servicio) == ("solarman", "write_multiple_registers")
 
     @pytest.mark.asyncio
     async def test_sin_servicios_de_escritura_error_explicito(self):

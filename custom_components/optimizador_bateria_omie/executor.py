@@ -1,10 +1,12 @@
 """Executor de control del inversor (F4) vía servicios de Solarman.
 
 Aplica el plan de F3 escribiendo en los registros de control del Deye
-con los servicios de la integración oficial Solarman
-(``write_holding_register`` / ``write_multiple_holding_registers`` /
-``read_multiple_holding_registers`` en la generación 25.x, con
-detección en caliente de los nombres legados). **Ninguna dirección vive aquí**: todas
+con los servicios de la integración oficial Solarman. TODAS las
+escrituras (individuales incluidas) van por función 16 —
+``write_multiple_holding_registers`` — porque el datalogger Deye
+responde ACKNOWLEDGE a la FC 6; la verificación relee con
+``read_multiple_holding_registers`` (25.x, con detección en caliente
+de los nombres legados). **Ninguna dirección vive aquí**: todas
 salen de la sección ``control`` de ``registers.yaml``.
 
 Salvaguardas (AGENTS §1 y PLAN_F4): sin ``control_activo=on`` no existe
@@ -14,7 +16,7 @@ desde cualquier fuente) se fija a la corriente equivalente de
 ``potencia_max_carga`` (valor constante entre tramos, nunca la corriente
 de un tramo) para no estrangular la carga solar.
 """
-# versión 0.11.4
+# versión 0.11.5
 
 import asyncio
 import logging
@@ -85,22 +87,21 @@ from custom_components.optimizador_bateria_omie.telemetria import (
 _LOGGER = logging.getLogger(__name__)
 
 # Servicios de la integración Solarman (payload aislado aquí). La
-# integración renombró sus servicios en 25.x (PLAN_F4 Q1 confirmado en
-# la primera activación real, 0.11.4): la generación ACTUAL es
-# write_holding_register / write_multiple_holding_registers /
-# read_multiple_holding_registers (campo ``count``); la LEGADA era
-# write_single_register / write_multiple_registers /
+# integración renombró sus servicios en 25.x (confirmado en la
+# primera activación real): la generación ACTUAL es
+# write_multiple_holding_registers / read_multiple_holding_registers
+# (campo ``count``); la LEGADA era write_multiple_registers /
 # read_holding_registers (campo ``quantity``). Se detecta en caliente.
+# Las escrituras individuales (FC 6, write_holding_register) NO se
+# usan: el datalogger Deye las rechaza con ACKNOWLEDGE (0.11.5).
 DOMINIO_SOLARMAN = "solarman"
-SERVICIO_ESCRIBIR_ACTUAL = "write_holding_register"
-SERVICIO_ESCRIBIR_LEGADO = "write_single_register"
 SERVICIO_ESCRIBIR_BLOQUE_ACTUAL = "write_multiple_holding_registers"
 SERVICIO_ESCRIBIR_BLOQUE_LEGADO = "write_multiple_registers"
 SERVICIO_LEER_ACTUAL = "read_multiple_holding_registers"
 SERVICIO_LEER_LEGADO = "read_holding_registers"
 CAMPO_DEVICE = "device"
 CAMPO_REGISTRO = "register"
-CAMPO_VALOR = "value"
+
 CAMPO_VALORES = "values"
 CAMPO_CANTIDAD = "count"
 CAMPO_CANTIDAD_LEGADO = "quantity"
@@ -206,15 +207,16 @@ class EscritorSolarman:
             ) from err
 
     async def escribir(self, addr: int, valor: int) -> None:
-        """Escribe un registro individual."""
-        await self._invocar(
-            self._servicio(
-                "escribir",
-                SERVICIO_ESCRIBIR_ACTUAL,
-                SERVICIO_ESCRIBIR_LEGADO,
-            ),
-            {CAMPO_REGISTRO: int(addr), CAMPO_VALOR: int(valor)},
-        )
+        """Escribe un registro individual vía bloque de un valor (FC 16).
+
+        El datalogger de Deye responde con ACKNOWLEDGE (excepción
+        Modbus 5, "long duration of time will be required") a la
+        escritura individual (FC 6); la escritura por bloques con un
+        solo registro es la vía que acepta (0.11.5). El propio
+        services.yaml de la integración Solarman recomienda FC 16
+        cuando el dispositivo rechaza FC 6.
+        """
+        await self.escribir_bloque(addr, [valor])
 
     async def escribir_bloque(
         self, addr: int, valores: list[int]

@@ -38,6 +38,7 @@ Prioridad de estrategia: **autoconsumo + arbitraje cuando convenga**.
 - **0.11.2 — evento `optimizador_bateria_omie_sin_telemetria`**: `CoordinadorTelemetria` dispara un evento de HA en cada transición de disponibilidad (data `{"disponible", "motivo"}`; referencia = SOC), para automatizaciones de notificación móvil. La primera observación tras arranque no dispara (evita ruido en reinicios).
 - **0.11.3 — activación atómica de `control_activo`**: detectado en la primera activación real: si la escritura de límites SOC (217/218) fallaba al encender el switch, la bandera ya estaba puesta a True → switch en ON con el estado congelado en `inactivo` y sin escribir nunca, sin error visible. Ahora la bandera solo se activa si la escritura tiene éxito; si falla, la activación se aborta quedando OFF con motivo en el sensor (`activación abortada: …`), ERROR en el log y el error relanzado a la UI.
 - **0.11.4 — servicios de Solarman 25.x**: la primera activación real destapó que la integración Solarman renombró sus servicios (el bloqueo real era `not a valid option at 'register'` del servicio legado inexistente). `EscritorSolarman` detecta en caliente la generación instalada y usa la actual — `write_holding_register`, `write_multiple_holding_registers`, `read_multiple_holding_registers` con campo `count` y respuesta `{registro: valor}` — con fallback a los nombres legados (`write_single_register`, `write_multiple_registers`, `read_holding_registers` con `quantity`).
+- **0.11.5 — escrituras siempre por FC 16**: segunda lección de la activación real: el datalogger Deye responde ACKNOWLEDGE (excepción Modbus 5, "long duration of time…") a la escritura individual FC 6, tal como avisa el services.yaml de Solarman. TODAS las escrituras (individuales incluidas) van por `write_multiple_holding_registers` con `values=[valor]`.
 
 ---
 
@@ -342,8 +343,8 @@ familias:
 Fichero: `executor.py`.
 
 **Mecanismo de escritura**: llamadas a los servicios de la integración oficial Solarman:
-- `solarman.write_holding_register` (o el legado `write_single_register`) para escribir un registro individual.
-- `solarman.write_multiple_holding_registers` (o el legado `write_multiple_registers`) para escribir un bloque contiguo.
+- Escrituras SIEMPRE vía bloque FC 16 (`write_multiple_holding_registers`), individuales incluidas: el Deye rechaza la FC 6 con ACKNOWLEDGE (0.11.5).
+- `solarman.write_multiple_holding_registers` (o legado `write_multiple_registers`) para bloques contiguos.
 - **`solarman.write_multiple_holding_registers` está deprecado y no se usará.**
 
 **Flujo**:
