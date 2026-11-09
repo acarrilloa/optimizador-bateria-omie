@@ -77,13 +77,14 @@ class TestSwitchControlActivo:
 
 
 class TestNumbers:
-    def test_crear_numbers_ocho_parametros(self):
+    def test_crear_numbers_nueve_parametros(self):
         numbers = crear_numbers(_entry(), _coordinador_plan())
 
-        assert len(numbers) == 8
+        assert len(numbers) == 9
         unique_ids = {n.unique_id for n in numbers}
         assert "optimizador_bateria_omie_precio_max_compra" in unique_ids
         assert "optimizador_bateria_omie_eficiencia_round_trip" in unique_ids
+        assert "optimizador_bateria_omie_precio_excedentes" in unique_ids
 
     def test_native_value_default_y_de_entry(self):
         coordinador = _coordinador_plan()

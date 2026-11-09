@@ -209,3 +209,90 @@ async def test_sin_telemetria_no_acumula(store):
     await aud.async_actualizar(_ahora_local_tramo(10))
     await aud.async_actualizar(_ahora_local_tramo(10, 15))
     assert aud.ahorro_real_hoy == 0.0
+
+
+class TestF5U4:
+    """Factor de excedentes y media por tramo (D-F5.3)."""
+
+    @staticmethod
+    def _entry(factor):
+        return SimpleNamespace(data={"precio_excedentes": factor})
+
+    @pytest.mark.asyncio
+    async def test_media_de_varias_lecturas_del_tramo(self, store):
+        """La energía del tramo usa la media de las lecturas, no la
+        última llegada (F5-U4)."""
+        # Batería descargando 1000 W en las tres lecturas del tramo...
+        tel = _telemetria_fake(potencia_bateria=1000.0, consumo_casa=300.0)
+        aud = _auditoria(tel)
+        await aud.async_cargar()
+
+        await aud.async_actualizar(_ahora_local_tramo(10))       # 10:00
+        # ...salvo la última, que baja a 400 W (pico de cierre)
+        tel.data.potencia_bateria = 400.0
+        await aud.async_actualizar(_ahora_local_tramo(10, 5))    # 10:05
+        tel.data.potencia_bateria = 200.0
+        await aud.async_actualizar(_ahora_local_tramo(10, 10))   # 10:10
+        tel.data.potencia_bateria = 1000.0
+        await aud.async_actualizar(_ahora_local_tramo(10, 15))   # cierra
+
+        d = aud.desglose
+        # Media del tramo 40: (1000+400+200)/3 ≈ 533.3 W (la lectura de
+        # las 10:15 ya pertenece al tramo siguiente). El desglose
+        # redondea a 3 decimales.
+        esperado = round(
+            (1000 + 400 + 200) / 3 * DELTA_T_H / 1000, 3
+        )
+        assert d["descarga_bateria_kwh"] == pytest.approx(esperado)
+
+    @pytest.mark.asyncio
+    async def test_factor_excedentes_valorado(self, store):
+        """Exportación valorada a precio·factor (D-F5.3), nunca 0 ni
+        negativo."""
+        tel = _telemetria_fake(potencia_bateria=1000.0, consumo_casa=0.0)
+        # El precio del tramo 40: primer ranura del día → 0.2 €/kWh
+        aud = AuditoriaAhorro(
+            None, _precio_fake(_ranuras(0.2)), tel, self._entry(0.5)
+        )
+        await aud.async_cargar()
+
+        await aud.async_actualizar(_ahora_local_tramo(10))
+        await aud.async_actualizar(_ahora_local_tramo(10, 15))
+
+        d = aud.desglose
+        # Exporta 0.25 kWh a 0.2·0.5 = 0.1 €/kWh → 0.025 € de ingreso
+        assert d["red_exportada_kwh"] == pytest.approx(0.25)
+        assert d["coste_real_eur"] == pytest.approx(-0.025)
+
+    @pytest.mark.asyncio
+    async def test_factor_excedentes_no_nunca_negativo(self, store):
+        """Precio negativo + factor: exportar nunca cuesta dinero."""
+        precios = []
+        from custom_components.optimizador_bateria_omie.cliente_omie import (
+            Ranura as _Ranura,
+        )
+
+        hoy = datetime.now().astimezone().date()
+        base = datetime(hoy.year, hoy.month, hoy.day, tzinfo=UTC)
+        for i in range(96):
+            precios.append(
+                _Ranura(
+                    fecha_hora_utc=base + timedelta(minutes=15 * i),
+                    precio_eur_kwh=-0.10,
+                    fuente="omie",
+                    fecha_publicacion=base,
+                )
+            )
+        tel = _telemetria_fake(potencia_bateria=1000.0, consumo_casa=0.0)
+        aud = AuditoriaAhorro(
+            None, _precio_fake(precios),
+            tel, self._entry(1.0),
+        )
+        await aud.async_cargar()
+
+        await aud.async_actualizar(_ahora_local_tramo(10))
+        await aud.async_actualizar(_ahora_local_tramo(10, 15))
+
+        d = aud.desglose
+        # Exportación 0.25 kWh valorada a max(0, -0.10·1) = 0 €/kWh
+        assert d["coste_real_eur"] == pytest.approx(0.0)

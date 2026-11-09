@@ -30,6 +30,7 @@ from custom_components.optimizador_bateria_omie.const import (
     CONF_MARGEN_ARBITRAJE,
     CONF_POTENCIA_MAX_CARGA,
     CONF_POTENCIA_MAX_DESCARGA,
+    CONF_PRECIO_EXCEDENTES,
     CONF_PRECIO_MAX_COMPRA,
     CONF_PRECIO_MIN_VENTA,
     CONF_SOC_MAX,
@@ -38,6 +39,7 @@ from custom_components.optimizador_bateria_omie.const import (
     DEFAULT_MARGEN_ARBITRAJE,
     DEFAULT_POTENCIA_MAX_CARGA,
     DEFAULT_POTENCIA_MAX_DESCARGA,
+    DEFAULT_PRECIO_EXCEDENTES,
     DEFAULT_PRECIO_MAX_COMPRA,
     DEFAULT_PRECIO_MIN_VENTA,
     DEFAULT_SOC_MAX,
@@ -47,6 +49,7 @@ from custom_components.optimizador_bateria_omie.const import (
     NUMBER_MARGEN_ARBITRAJE,
     NUMBER_POTENCIA_MAX_CARGA,
     NUMBER_POTENCIA_MAX_DESCARGA,
+    NUMBER_PRECIO_EXCEDENTES,
     NUMBER_PRECIO_MAX_COMPRA,
     NUMBER_PRECIO_MIN_VENTA,
     NUMBER_SOC_MAX,
@@ -219,7 +222,7 @@ class NumberParametroPlanner(NumberEntity):
 def crear_numbers(entry, coordinador_plan, ejecutor=None) -> list[
     NumberParametroPlanner
 ]:
-    """Las 8 entities number de los parámetros del plan (§5 del PLAN_F4)."""
+    """Las 9 entities number de los parámetros del plan (§5 del PLAN_F4)."""
     definiciones = [
         (
             CONF_PRECIO_MAX_COMPRA, "Precio máximo de compra",
@@ -260,6 +263,11 @@ def crear_numbers(entry, coordinador_plan, ejecutor=None) -> list[
             CONF_EFICIENCIA_ROUND_TRIP, "Eficiencia round-trip",
             NUMBER_EFICIENCIA_ROUND_TRIP, 70.0, 95.0, 1.0,
             DEFAULT_EFICIENCIA_ROUND_TRIP, "%",
+        ),
+        (
+            CONF_PRECIO_EXCEDENTES, "Factor de precio de excedentes",
+            NUMBER_PRECIO_EXCEDENTES, 0.0, 1.0, 0.005,
+            DEFAULT_PRECIO_EXCEDENTES, "factor",
         ),
     ]
     return [

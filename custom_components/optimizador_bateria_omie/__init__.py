@@ -131,7 +131,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coordinador_telemetria = CoordinadorTelemetria(
         hass, cliente_solarman, gestor, entry
     )
-    auditoria = AuditoriaAhorro(hass, coordinador_precio, coordinador_telemetria)
+    auditoria = AuditoriaAhorro(
+        hass, coordinador_precio, coordinador_telemetria, entry
+    )
     await auditoria.async_cargar()
 
     @callback
