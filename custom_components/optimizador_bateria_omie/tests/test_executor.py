@@ -389,6 +389,25 @@ class TestActivacion:
         escritor.escribir.assert_not_called()
         assert executor.estado == "inactivo"
 
+    @pytest.mark.asyncio
+    async def test_fallo_limites_soc_aborta_activacion(
+        self, hass, mapa, escritor
+    ):
+        """0.11.3: si la escritura de límites falla, la activación se
+        aborta quedando OFF con motivo explícito — nunca switch ON
+        con estado congelado en ``inactivo``."""
+        escritor.escribir = AsyncMock(
+            side_effect=ErrorEscrituraSolarman("dispositivo no resuelto")
+        )
+        executor = _executor(hass, mapa, escritor, _tramo(ACCION_MANTENER))
+
+        with pytest.raises(ErrorEscrituraSolarman):
+            await executor.async_set_control_activo(True)
+
+        assert executor.control_activo is False
+        assert executor.estado == "inactivo"
+        assert "abortada" in executor.estado_detalle["motivo"]
+
 
 class TestEscritorSolarman:
     def _hass(self, devices=None):

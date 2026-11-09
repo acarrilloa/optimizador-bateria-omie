@@ -13,7 +13,7 @@ desde cualquier fuente) se fija a la corriente equivalente de
 ``potencia_max_carga`` (valor constante entre tramos, nunca la corriente
 de un tramo) para no estrangular la carga solar.
 """
-# versión 0.10.0
+# versión 0.11.3
 
 import asyncio
 import logging
@@ -953,17 +953,40 @@ class EjecutorControl:
     # ─── Control activo ───
 
     async def async_set_control_activo(self, activo: bool) -> None:
-        """Enciende/apaga el control real de escrituras (D18)."""
+        """Enciende/apaga el control real de escrituras (D18).
+
+        La activación es **atómica** (0.11.3): la bandera solo se pone
+        a ``True`` si la escritura de los límites SOC (217/218) tiene
+        éxito; si falla, se aborta quedando OFF con el motivo explícito
+        y relanzando el error para que la UI lo muestre. Sin esto, un
+        fallo de la escritura dejaba el switch en ON con el estado
+        congelado en ``inactivo`` y sin escribir nunca.
+        """
         if activo == self._control_activo:
             return
-        self._control_activo = activo
         if activo:
+            try:
+                await self._escribir_limites_soc()
+            except Exception as err:
+                _LOGGER.error(
+                    "control_activo ON abortado: fallo escribiendo "
+                    "límites SOC (217/218): %s",
+                    err,
+                )
+                self._motivo_estado = (
+                    "activación abortada: fallo escribiendo límites "
+                    f"SOC (217/218): {err}"
+                )
+                self._ultimo_simulado = False
+                self._actualizar_estado()
+                raise
+            self._control_activo = True
             _LOGGER.info(
                 "control_activo ON: escrituras reales habilitadas "
                 "(bajo salvaguardas)"
             )
-            await self._escribir_limites_soc()
         else:
+            self._control_activo = False
             _LOGGER.info("control_activo OFF: modo dry-run forzado")
         await self.async_aplicar_tramo("control_activo")
 
