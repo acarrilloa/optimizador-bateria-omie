@@ -49,6 +49,7 @@ from custom_components.optimizador_bateria_omie.const import (
     NUMBER_SOC_MAX,
     NUMBER_SOC_MIN,
     SENSOR_ESTADO_CONTROL,
+    SENSOR_FORECAST_QUALITY,
     SWITCH_CONTROL_ACTIVO,
 )
 
@@ -280,3 +281,42 @@ class SensorEstadoControl(SensorEntity):
     def extra_state_attributes(self) -> dict[str, Any]:
         """Detalle del executor (motivo, fallos, escrituras, modo manual)."""
         return self._ejecutor.estado_detalle
+
+
+class SensorForecastQuality(SensorEntity):
+    """Diagnóstico del forecaster ML de consumo (F5-U2).
+
+    Estado: MAPE del backtest del ML o ``sin_modelo``. Atributos:
+    comparación con el perfil (guardrail D-F5.2), fuente activa y
+    tamaño del último entrenamiento.
+    """
+
+    _attr_unique_id = SENSOR_FORECAST_QUALITY
+    _attr_name = "Forecast quality"
+    _attr_has_entity_name = True
+    _attr_icon = "mdi:chart-box-outline"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, predictor) -> None:
+        """Inicializa con el PredictorConsumo."""
+        self._predictor = predictor
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        """Dispositivo compartido."""
+        return _device_info()
+
+    @property
+    def native_value(self) -> Any:
+        """MAPE del backtest del ML o ``sin_modelo``."""
+        mape = self._predictor.metricas_ml.get("mape_ml")
+        return round(float(mape), 2) if mape is not None else "sin_modelo"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Métricas del último reentrenamiento."""
+        metricas = dict(self._predictor.metricas_ml)
+        metricas["fuente_consumo"] = self._predictor.fuente_consumo_activa
+        return {
+            key: valor for key, valor in metricas.items() if valor is not None
+        }

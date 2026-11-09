@@ -3,7 +3,7 @@
 import random
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -127,7 +127,7 @@ def _muestras_sinteticas(inicio: date, dias: int, seed: int = 42):
     return muestras
 
 
-def _predictor(hass, params=None, fuente_fv=None, ruta=None):
+def _predictor(hass, params=None, fuente_fv=None, ruta=None, ruta_modelo=None):
     return PredictorConsumo(
         hass=hass,
         fuente_consumo=MagicMock(),
@@ -135,6 +135,7 @@ def _predictor(hass, params=None, fuente_fv=None, ruta=None):
         festivos=ModeloTarifa(),
         params=params or {},
         ruta_perfil=ruta or Path(hass.config.config_dir) / "perfil.json",
+        ruta_modelo=ruta_modelo,
     )
 
 
@@ -458,3 +459,120 @@ class TestPredecirFv:
         assert prediccion.fuente_fv == "solcast"
         assert len(prediccion.consumo) == 96
         assert len(prediccion.fv) == 96
+
+
+class TestCapaML:
+    """F5-U2: forecaster ML con guardrail de adopción (D-F5.2)."""
+
+    def _predictor_con_datos(self, hass, tmp_path, dias=30, drift_dia=8.0):
+        """Dataset con tendencia diaria (drift): el perfil (mediana de
+        la ventana) queda sistemáticamente por debajo del final de la ventana; el
+        ML con lags sigue la tendencia → caso de adopción realista."""
+        rng = random.Random(7)
+        inicio = HOY - timedelta(days=dias - 1)
+        muestras = []
+        for d in range(dias):
+            dia = inicio + timedelta(days=d)
+            base = (400.0 if dia.weekday() < 5 else 800.0) + drift_dia * d
+            for tramo in range(96):
+                muestras.append(
+                    _muestra(dia, tramo, base + rng.uniform(-10, 10))
+                )
+        predictor = _predictor(
+            hass, ruta=tmp_path / "perfil.json",
+            ruta_modelo=tmp_path / "modelo.joblib",
+        )
+        predictor.fuente_consumo.obtener_series = AsyncMock(
+            return_value=muestras
+        )
+        return predictor
+
+    @pytest.mark.asyncio
+    async def test_reentrenamiento_adopta_si_mejora(self, hass, tmp_path):
+        predictor = self._predictor_con_datos(hass, tmp_path)
+
+        # Flujo de producción: primero perfil, luego ML (guardrail
+        # comparado contra el perfil de F3)
+        await predictor.recalcular_perfil()
+        metricas = await predictor.async_reentrenar_ml()
+
+        assert metricas is not None
+        assert metricas["mape_ml"] is not None
+        assert metricas["mape_perfil"] is not None
+        assert metricas["n_test"] > 0
+        # Dataset con patrón fuerte: el ML debe adoptarse
+        assert metricas["adoptado"] is True
+        assert predictor.fuente_consumo_activa == "ml"
+        # El modelo queda persistido y recargable
+        assert (tmp_path / "modelo.joblib").exists()
+        assert await predictor.async_cargar_ml() is True
+
+    @pytest.mark.asyncio
+    async def test_reentrenamiento_persiste_metricas(self, hass, tmp_path):
+        predictor = self._predictor_con_datos(hass, tmp_path)
+        await predictor.async_reentrenar_ml()
+
+        otro = _predictor(
+            hass, ruta=tmp_path / "perfil2.json",
+            ruta_modelo=tmp_path / "modelo.joblib",
+        )
+        assert await otro.async_cargar_ml() is True
+        assert otro.metricas_ml.get("adoptado") is True
+        assert otro.fuente_consumo_activa == "ml"
+
+    @pytest.mark.asyncio
+    async def test_guardrail_no_adopta_si_peor(self, hass, tmp_path):
+        """ML con MAPE peor que el perfil → sigue el perfil de F3."""
+        predictor = self._predictor_con_datos(hass, tmp_path)
+        await predictor.recalcular_perfil()
+
+        def _mape_pesimo(dataset):
+            return 999.0
+
+        with patch.object(
+            type(predictor._ml), "evaluar_mape", side_effect=_mape_pesimo
+        ):
+            metricas = await predictor.async_reentrenar_ml()
+
+        assert metricas["adoptado"] is False
+        assert predictor.fuente_consumo_activa == "perfil"
+        # predecir_consumo devuelve el perfil (cascada normal)
+        pred = predictor.predecir_consumo(HOY)
+        assert len(pred) == 96
+
+    @pytest.mark.asyncio
+    async def test_datos_insuficientes_no_reentrena(self, hass, tmp_path):
+        predictor = self._predictor_con_datos(hass, tmp_path, dias=1)
+
+        assert await predictor.async_reentrenar_ml() is None
+        assert predictor.fuente_consumo_activa == "perfil"
+
+    @pytest.mark.asyncio
+    async def test_prediccion_ml_con_banda(self, hass, tmp_path):
+        predictor = self._predictor_con_datos(hass, tmp_path)
+        await predictor.async_reentrenar_ml()
+
+        pred = predictor.predecir_consumo(HOY)
+
+        assert len(pred) == 96
+        for percentiles in pred:
+            assert percentiles is not None
+            assert 0.0 <= percentiles.p10 <= percentiles.p50
+            assert percentiles.p50 <= percentiles.p90
+
+    def test_festivo_manual_hoy_usa_perfil(self, hass, tmp_path):
+        """La marca manual festivo_hoy no está en las features del ML:
+        esos días manda el perfil (tipo finde), aunque el ML esté
+        adoptado."""
+        predictor = _predictor(hass, ruta_modelo=tmp_path / "m.joblib")
+        predictor._ml.metricas["adoptado"] = True
+
+        with patch.object(
+            PredictorConsumo,
+            "_predecir_ml",
+            side_effect=AssertionError("El ML no debe participar hoy"),
+        ):
+            hoy = datetime.now(MADRID).date()
+            pred = predictor.predecir_consumo(hoy, festivo_hoy=True)
+        # cae al perfil: tipo finde; sin datos de perfil → cascada None
+        assert len(pred) == 96

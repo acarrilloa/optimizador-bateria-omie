@@ -9,6 +9,7 @@ from custom_components.optimizador_bateria_omie.forecast_ml import (
     COLUMNAS,
     LAGS_DIAS,
     DatasetML,
+    ForecasterML,
     construir_dataset,
     construir_ejemplo,
     indice_lags,
@@ -151,3 +152,74 @@ class TestRutaModelo:
             tmp_path / "optimizador_bateria_omie"
             / "modelo_consumo.joblib"
         )
+
+
+class TestForecasterML:
+    def _dataset(self, dias=30, seed=42):
+        return construir_dataset(
+            _muestras_sinteticas(dias=dias, seed=seed), set()
+        )
+
+    def test_entrenar_y_evaluar(self):
+        dataset = self._dataset()
+        corte = int(len(dataset) * 0.7)
+        entreno = DatasetML(
+            x=dataset.x[:corte], y=dataset.y[:corte],
+            ejemplos=dataset.ejemplos[:corte],
+        )
+        prueba = DatasetML(
+            x=dataset.x[corte:], y=dataset.y[corte:],
+            ejemplos=dataset.ejemplos[corte:],
+        )
+        ml = ForecasterML()
+
+        assert ml.entrenado is False
+        assert ml.evaluar_mape(prueba) is None
+
+        ml.entrenar(entreno)
+        assert ml.entrenado is True
+        assert ml.metricas["n_entrenamiento"] == corte
+
+        # Dataset sintético con patrón fuerte: el MAPE debe ser bajo
+        mape = ml.evaluar_mape(prueba)
+        assert mape is not None
+        assert mape < 15.0
+
+    def test_bandas_aditivas(self):
+        dataset = self._dataset(dias=20)
+        ml = ForecasterML()
+        ml.entrenar(dataset)
+
+        off10, off90 = ml.banda
+        assert off10 <= 0.0 <= off90
+
+    def test_predecir_array_96(self):
+        ml = ForecasterML()
+        ml.entrenar(self._dataset(dias=20))
+        lags = indice_lags(_muestras_sinteticas(dias=20))
+        x = predecir_features(HOY, set(), lags)
+
+        p50 = ml.predecir_array(x)
+        assert p50.shape == (96,)
+        assert np.all(p50 > 0)
+
+    def test_persistencia_redonda(self, tmp_path):
+        ruta = tmp_path / "modelo.joblib"
+        ml = ForecasterML(ruta_modelo=ruta)
+        ml.entrenar(self._dataset(dias=20))
+        ml.metricas["mape_ml"] = 8.3
+        ml.guardar()
+
+        otro = ForecasterML(ruta_modelo=ruta)
+        assert otro.cargar() is True
+        assert otro.entrenado is True
+        assert otro.metricas.get("mape_ml") == 8.3
+        lags = indice_lags(_muestras_sinteticas(dias=20))
+        x = predecir_features(HOY, set(), lags)
+        a = ml.predecir_array(x)
+        b = otro.predecir_array(x)
+        assert np.array_equal(a, b)
+
+    def test_cargar_sin_fichero(self, tmp_path):
+        ml = ForecasterML(ruta_modelo=tmp_path / "no_existe.joblib")
+        assert ml.cargar() is False

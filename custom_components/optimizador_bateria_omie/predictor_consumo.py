@@ -1,15 +1,20 @@
-"""Predicción de consumo y FV por tramos de 15 min (F3).
+"""Predicción de consumo y FV por tramos de 15 min (F3 + F5).
 
 Capa 1 (RF-05): **perfil estadístico** — mediana (p50) del consumo por
 ``tramo (0–95) × tipo de día`` (laborable / fin-de-semana-o-festivo),
 con banda p10–p90 del mismo perfil. Previsión de FV con **Solcast como
 fuente preferente** (D8) y el perfil estadístico como fallback por día.
-Sin clima y sin ML (F5).
+
+Capa 2 (F5, RF-05): **forecaster ML** (``forecast_ml.py``,
+HistGradientBoosting) con **guardrail de adopción**: solo predice si su
+MAPE del backtest mejora el del perfil (D-F5.2); si no, el perfil de
+F3 sigue mandando. La marca manual ``festivo_hoy`` no llega a las
+features del ML → esos días usa el perfil.
 
 Nunca se inventan valores: los tramos sin datos suficientes quedan a
 ``None`` (cascada D6) y el greedy los trata como 0 W con warning.
 """
-# versión 0.9.0
+# versión 0.12.0
 
 import json
 import logging
@@ -26,10 +31,20 @@ from custom_components.optimizador_bateria_omie.const import (
     CONF_VENTANA_HISTORICO,
     DEFAULT_VENTANA_HISTORICO,
     DOMAIN,
+    FUENTE_CONSUMO_ML,
+    FUENTE_CONSUMO_PERFIL,
     FUENTE_FV_NONE,
     FUENTE_FV_PERFIL,
     FUENTE_FV_SOLCAST,
     TRAMOS_POR_DIA,
+)
+from custom_components.optimizador_bateria_omie.forecast_ml import (
+    DatasetML,
+    ForecasterML,
+    construir_dataset,
+    indice_lags,
+    predecir_features,
+    ruta_modelo_por_defecto,
 )
 from custom_components.optimizador_bateria_omie.historico import (
     FuenteHistoricoRecorder,
@@ -161,12 +176,14 @@ class PredictorConsumo:
         festivos: ModeloTarifa,
         params: dict[str, Any],
         ruta_perfil: Path | None = None,
+        ruta_modelo: Path | None = None,
     ) -> None:
         """Inicializa el predictor.
 
         ``params`` es ``entry.data``: ventana de histórico, festivos
-        locales y entity_ids de Solcast (hoy/mañana). ``ruta_perfil``
-        permite inyectar la ruta de persistencia en tests.
+        locales y entity_ids de Solcast (hoy/mañana). ``ruta_perfil`` y
+        ``ruta_modelo`` permiten inyectar las rutas de persistencia en
+        tests.
         """
         self.hass = hass
         self.fuente_consumo = fuente_consumo
@@ -181,6 +198,194 @@ class PredictorConsumo:
             / "perfil_consumo.json"
         )
         self._perfil = _Perfil()
+        # Capa 2 (F5): forecaster ML con guardrail de adopción
+        self._ml = ForecasterML(ruta_modelo or ruta_modelo_por_defecto(hass))
+        self._lags_ml: dict[tuple[date, int], float] = {}
+
+    # ─── Capa ML (F5) ───
+
+    @property
+    def metricas_ml(self) -> dict:
+        """Métricas del último entrenamiento (sensor forecast_quality)."""
+        return dict(self._ml.metricas)
+
+    @property
+    def fuente_consumo_activa(self) -> str:
+        """Fuente de predicción de consumo vigente: ml | perfil."""
+        if self._ml.entrenado and self._ml.adoptado:
+            return FUENTE_CONSUMO_ML
+        return FUENTE_CONSUMO_PERFIL
+
+    def _es_fecha_festivo(self, fecha: date) -> bool:
+        """Festivo nacional o local (para las features del ML)."""
+        local = datetime(fecha.year, fecha.month, fecha.day)
+        if self.festivos.es_festivo(local):
+            return True
+        return (f"{fecha.month:02d}-{fecha.day:02d}") in (
+            self._params.get(CONF_FESTIVOS_LOCALES) or []
+        )
+
+    def _festivos_del_periodo(self, muestras: list[Muestra]) -> set[date]:
+        """Fechas festivas presentes en las muestras (features)."""
+        return {
+            m.ts_utc.astimezone().date()
+            for m in muestras
+            if self._es_fecha_festivo(m.ts_utc.astimezone().date())
+        }
+
+    async def async_cargar_ml(self) -> bool:
+        """Carga modelo+banda+métricas persistidos (executor)."""
+        try:
+            cargado = await self.hass.async_add_executor_job(
+                self._ml.cargar
+            )
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("Modelo ML no se pudo cargar: %s", err)
+            return False
+        if cargado:
+            _LOGGER.info(
+                "Modelo ML cargado (%s)",
+                self._ml.metricas,
+            )
+        return cargado
+
+    async def async_actualizar_lags_ml(self) -> None:
+        """Refresca el índice de lags de la ventana del recorder."""
+        dias = int(
+            self._params.get(CONF_VENTANA_HISTORICO, DEFAULT_VENTANA_HISTORICO)
+        )
+        muestras = await self._obtener_muestras(self.fuente_consumo, dias)
+        if muestras:
+            self._lags_ml = indice_lags(muestras)
+
+    async def async_reentrenar_ml(self) -> dict | None:
+        """Entrena el ML sobre la ventana y decide la adopción.
+
+        Holdout cronológico 70/30: MAPE del ML contra MAPE del perfil
+        (p50, mismo holdout). El ML solo se **adopta** si lo mejora
+        (guardrail D-F5.2); el perfil está ajustado sobre la misma
+        ventana, así que el listón es conservador a propósito.
+        """
+        dias = int(
+            self._params.get(CONF_VENTANA_HISTORICO, DEFAULT_VENTANA_HISTORICO)
+        )
+        muestras = await self._obtener_muestras(self.fuente_consumo, dias)
+        self._lags_ml = indice_lags(muestras) if muestras else {}
+        if len(muestras) < 2 * TRAMOS_POR_DIA:
+            _LOGGER.info(
+                "Reentrenamiento ML pospuesto: %d muestras insuficientes",
+                len(muestras),
+            )
+            return None
+
+        dataset = construir_dataset(
+            muestras, self._festivos_del_periodo(muestras)
+        )
+        corte = int(len(dataset) * 0.7)
+        entreno = DatasetML(
+            x=dataset.x[:corte],
+            y=dataset.y[:corte],
+            ejemplos=dataset.ejemplos[:corte],
+        )
+        prueba = DatasetML(
+            x=dataset.x[corte:],
+            y=dataset.y[corte:],
+            ejemplos=dataset.ejemplos[corte:],
+        )
+        if corte == 0 or len(prueba) == 0:
+            return None
+
+        def _entrenar() -> float | None:
+            self._ml.entrenar(entreno)
+            return self._ml.evaluar_mape(prueba)
+
+        mape_ml = await self.hass.async_add_executor_job(_entrenar)
+        mape_perfil = self._mape_perfil_holdout(prueba)
+        adoptado = (
+            mape_ml is not None
+            and (mape_perfil is None or mape_ml < mape_perfil)
+        )
+        self._ml.metricas.update(
+            {
+                "mape_ml": round(mape_ml, 2) if mape_ml is not None else None,
+                "mape_perfil": (
+                    round(mape_perfil, 2)
+                    if mape_perfil is not None
+                    else None
+                ),
+                "adoptado": adoptado,
+                "n_test": len(prueba),
+                "ventana_dias": dias,
+                "reentrenado": datetime.now(tz=UTC).isoformat(),
+            }
+        )
+        try:
+            await self.hass.async_add_executor_job(self._ml.guardar)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("Modelo ML no se pudo guardar: %s", err)
+
+        _LOGGER.info(
+            "ML reentrenado: MAPE ML %s vs perfil %s → %s",
+            self._ml.metricas.get("mape_ml"),
+            self._ml.metricas.get("mape_perfil"),
+            "adoptado" if adoptado else "perfil (guardrail)",
+        )
+        return dict(self._ml.metricas)
+
+    def _mape_perfil_holdout(self, prueba: DatasetML) -> float | None:
+        """MAPE del p50 del perfil sobre el holdout (None sin datos)."""
+        errores, n = 0.0, 0
+        for ejemplo in prueba.ejemplos:
+            if ejemplo.consumo_w is None:
+                continue
+            entrada = self._perfil.entrada(
+                "consumo", self.tipo_dia(ejemplo.fecha), ejemplo.tramo
+            )
+            if not entrada:
+                continue
+            p50 = entrada.get("p50")
+            if p50 is None:
+                continue
+            y = float(ejemplo.consumo_w)
+            errores += abs(y - float(p50)) / max(abs(y), 1.0)
+            n += 1
+        if n == 0:
+            return None
+        return (errores / n) * 100.0
+
+    def _usar_ml(self, fecha: date, festivo_hoy: bool) -> bool:
+        """¿Predice el ML para ``fecha``? (guardrail + festivo manual)."""
+        hoy = datetime.now().astimezone().date()
+        if festivo_hoy and fecha == hoy:
+            # La marca manual festivo_hoy no está en las features:
+            # esos días manda el perfil (tipo "finde")
+            return False
+        return self._ml.entrenado and self._ml.adoptado
+
+    def _predecir_ml(self, fecha: date) -> list[PercentilesTramo]:
+        """Predicción p10/p50/p90 del ML para los 96 tramos."""
+        festivos = {fecha} if self._es_fecha_festivo(fecha) else set()
+        x = predecir_features(fecha, festivos, self._lags_ml)
+        p50s = self._ml.predecir_array(x)
+        off10, off90 = self._ml.banda
+        return [
+            PercentilesTramo(
+                p10=max(0.0, p + off10),
+                p50=float(p),
+                p90=float(p) + off90,
+            )
+            for p in p50s
+        ]
+
+    async def async_preparar_ml(self) -> None:
+        """Arranque: carga o reentrena, y refresca lags (tolerante)."""
+        try:
+            await self.async_actualizar_lags_ml()
+            if self._ml.entrenado:
+                return
+            await self.async_reentrenar_ml()
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("Preparación del ML falló: %s", err)
 
     # ─── Tipo de día ───
 
@@ -350,8 +555,14 @@ class PredictorConsumo:
     def predecir_consumo(
         self, fecha: date, festivo_hoy: bool = False
     ) -> list[PercentilesTramo | None]:
-        """Predicción p10/p50/p90 del consumo de los 96 tramos."""
+        """Predicción p10/p90 del consumo de los 96 tramos.
+
+        Con el ML adoptado (guardrail D-F5.2) usa la capa 2; si no, el
+        perfil estadístico de F3.
+        """
         tipo = self.tipo_dia(fecha, festivo_hoy)
+        if self._usar_ml(fecha, festivo_hoy):
+            return self._predecir_ml(fecha)
         return [
             self._percentiles_perfil("consumo", tipo, tramo)
             for tramo in range(TRAMOS_POR_DIA)

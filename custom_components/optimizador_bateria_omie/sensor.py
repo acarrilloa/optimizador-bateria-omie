@@ -16,6 +16,7 @@ from custom_components.optimizador_bateria_omie.entidades import (
 )
 from custom_components.optimizador_bateria_omie.entidades_control import (
     SensorEstadoControl,
+    SensorForecastQuality,
 )
 from custom_components.optimizador_bateria_omie.entidades_plan import (
     SensorAhorroEfectivoHoy,
@@ -78,6 +79,10 @@ async def async_setup_entry(
     # Ahorro efectivo (F4.5): vive en la auditoría, no en el plan
     if "auditoria" in datos_dominio:
         entidades.append(SensorAhorroEfectivoHoy(datos_dominio["auditoria"]))
+
+    # Calidad del forecaster ML (F5-U2): diagnóstico del predictor
+    if "predictor" in datos_dominio:
+        entidades.append(SensorForecastQuality(datos_dominio["predictor"]))
 
     # Sensor de estado de control (F4): reusa el EjecutorControl del setup
     if "executor" in datos_dominio:

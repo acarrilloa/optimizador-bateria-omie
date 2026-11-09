@@ -72,6 +72,17 @@ EVENT_SIN_TELEMETRIA = f"{DOMAIN}_sin_telemetria"
 # Tramos de 15 min por día (F5: compartido ML/LP/perfil; en const para
 # evitar importaciones circulares predictor ↔ forecast_ml)
 TRAMOS_POR_DIA = 96
+
+# Fuentes de predicción de consumo (F5) y sensor de calidad
+FUENTE_CONSUMO_ML = "ml"
+FUENTE_CONSUMO_PERFIL = "perfil"
+SENSOR_FORECAST_QUALITY = f"{DOMAIN}_forecast_quality"
+
+# Algoritmo de planificación (F5-U3): greedy | lp
+CONF_ALGORITMO_PLANNER = "algoritmo_planificador"
+ALGORITMO_GREEDY = "greedy"
+ALGORITMO_LP = "lp"
+SWITCH_USAR_LP = f"{DOMAIN}_usar_planificador_lp"
 DEFAULT_PERMITIR_CARGA_RED = True
 DEFAULT_PERMITIR_VENTA_RED = True
 # Guardarraíles de seguridad (0.11.0): el negocio lo decide la

@@ -175,6 +175,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         except Exception as e:  # noqa: BLE001
             _LOGGER.warning("Recálculo del perfil falló: %s", e)
 
+    # F5: modelo ML persistido; si no existe, reentrenamiento en
+    # segundo plano (executor job, no bloquea el arranque)
+    await predictor.async_cargar_ml()
+    if not predictor.metricas_ml:
+        hass.async_create_task(predictor.async_preparar_ml())
+
     planificador = PlanificadorGreedy(
         ParametrosPlanner.desde_entry(entry)
     )

@@ -157,11 +157,16 @@ class CoordinadorPlan:
         )
 
     async def _async_perfil_y_recalcular(self, motivo: str) -> None:
-        """Recalcula el perfil y luego el plan."""
+        """Recalcula el perfil (y reentrena el ML de F5) y luego el plan."""
         try:
             await self.predictor.recalcular_perfil()
         except Exception as err:  # noqa: BLE001
             _LOGGER.warning("Recálculo de perfil falló: %s", err)
+        # F5: reentrenamiento diario del forecaster ML tras el perfil
+        try:
+            await self.predictor.async_reentrenar_ml()
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("Reentrenamiento ML falló: %s", err)
         await self.async_recalcular(motivo)
 
     @callback
