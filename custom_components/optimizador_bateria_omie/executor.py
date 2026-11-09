@@ -2,8 +2,9 @@
 
 Aplica el plan de F3 escribiendo en los registros de control del Deye
 con los servicios de la integración oficial Solarman
-(``write_single_register`` / ``write_multiple_registers`` /
-``read_holding_registers``). **Ninguna dirección vive aquí**: todas
+(``write_holding_register`` / ``write_multiple_holding_registers`` /
+``read_multiple_holding_registers`` en la generación 25.x, con
+detección en caliente de los nombres legados). **Ninguna dirección vive aquí**: todas
 salen de la sección ``control`` de ``registers.yaml``.
 
 Salvaguardas (AGENTS §1 y PLAN_F4): sin ``control_activo=on`` no existe
@@ -13,7 +14,7 @@ desde cualquier fuente) se fija a la corriente equivalente de
 ``potencia_max_carga`` (valor constante entre tramos, nunca la corriente
 de un tramo) para no estrangular la carga solar.
 """
-# versión 0.11.3
+# versión 0.11.4
 
 import asyncio
 import logging
@@ -83,16 +84,26 @@ from custom_components.optimizador_bateria_omie.telemetria import (
 
 _LOGGER = logging.getLogger(__name__)
 
-# Servicios de la integración Solarman (payload aislado aquí, PLAN_F4 Q1:
-# verificar contra la integración instalada en la primera activación real)
+# Servicios de la integración Solarman (payload aislado aquí). La
+# integración renombró sus servicios en 25.x (PLAN_F4 Q1 confirmado en
+# la primera activación real, 0.11.4): la generación ACTUAL es
+# write_holding_register / write_multiple_holding_registers /
+# read_multiple_holding_registers (campo ``count``); la LEGADA era
+# write_single_register / write_multiple_registers /
+# read_holding_registers (campo ``quantity``). Se detecta en caliente.
 DOMINIO_SOLARMAN = "solarman"
-SERVICIO_ESCRIBIR = "write_single_register"
-SERVICIO_ESCRIBIR_BLOQUE = "write_multiple_registers"
-SERVICIO_LEER = "read_holding_registers"
+SERVICIO_ESCRIBIR_ACTUAL = "write_holding_register"
+SERVICIO_ESCRIBIR_LEGADO = "write_single_register"
+SERVICIO_ESCRIBIR_BLOQUE_ACTUAL = "write_multiple_holding_registers"
+SERVICIO_ESCRIBIR_BLOQUE_LEGADO = "write_multiple_registers"
+SERVICIO_LEER_ACTUAL = "read_multiple_holding_registers"
+SERVICIO_LEER_LEGADO = "read_holding_registers"
 CAMPO_DEVICE = "device"
 CAMPO_REGISTRO = "register"
 CAMPO_VALOR = "value"
 CAMPO_VALORES = "values"
+CAMPO_CANTIDAD = "count"
+CAMPO_CANTIDAD_LEGADO = "quantity"
 
 
 class ErrorEscrituraSolarman(Exception):
@@ -100,7 +111,7 @@ class ErrorEscrituraSolarman(Exception):
 
 
 class EscritorSolarman:
-    """Envoltorio de los servicios solarman.write_*/read_holding_registers.
+    """Envoltorio de los servicios de escritura/lectura de Solarman.
 
     Único punto del componente que llama a ``hass.services`` del dominio
     ``solarman``: si el payload de la integración cambia, se ajusta aquí.
@@ -108,6 +119,9 @@ class EscritorSolarman:
     configurado o, si no, con el **primer device** de la integración
     Solarman; si no se puede resolver, error explícito (nunca se
     inventa).
+
+    Detecta en caliente (0.11.4) la generación de servicios instalada
+    (renombrados en Solarman 25.x) y cachea la elección.
     """
 
     def __init__(self, hass: HomeAssistant, device_id: str = "") -> None:
@@ -115,6 +129,26 @@ class EscritorSolarman:
         self.hass = hass
         self._device_id = device_id or DEFAULT_DEVICE_ID_SOLARMAN
         self._device_resuelto: str | None = None
+        self._servicios: dict[str, str] = {}
+
+    def _servicio(self, tipo: str, actual: str, legado: str) -> str:
+        """Nombre del servicio según la generación de la integración."""
+        if tipo not in self._servicios:
+            if self.hass.services.has_service(DOMINIO_SOLARMAN, actual):
+                self._servicios[tipo] = actual
+            elif self.hass.services.has_service(DOMINIO_SOLARMAN, legado):
+                self._servicios[tipo] = legado
+                _LOGGER.info(
+                    "Integración Solarman con servicios legados: usando "
+                    "%s en vez de %s", legado, actual,
+                )
+            else:
+                raise ErrorEscrituraSolarman(
+                    f"La integración {DOMINIO_SOLARMAN} no expone ni "
+                    f"'{actual}' ni '{legado}': confirma que está "
+                    "instalada y actualizada"
+                )
+        return self._servicios[tipo]
 
     async def _resolver_device(self) -> str:
         """Device del inversor: configurado o primero de la integración."""
@@ -174,7 +208,11 @@ class EscritorSolarman:
     async def escribir(self, addr: int, valor: int) -> None:
         """Escribe un registro individual."""
         await self._invocar(
-            SERVICIO_ESCRIBIR,
+            self._servicio(
+                "escribir",
+                SERVICIO_ESCRIBIR_ACTUAL,
+                SERVICIO_ESCRIBIR_LEGADO,
+            ),
             {CAMPO_REGISTRO: int(addr), CAMPO_VALOR: int(valor)},
         )
 
@@ -185,7 +223,11 @@ class EscritorSolarman:
         if not valores:
             return
         await self._invocar(
-            SERVICIO_ESCRIBIR_BLOQUE,
+            self._servicio(
+                "escribir_bloque",
+                SERVICIO_ESCRIBIR_BLOQUE_ACTUAL,
+                SERVICIO_ESCRIBIR_BLOQUE_LEGADO,
+            ),
             {
                 CAMPO_REGISTRO: int(addr),
                 CAMPO_VALORES: [int(v) for v in valores],
@@ -193,10 +235,21 @@ class EscritorSolarman:
         )
 
     async def leer(self, addr: int, cantidad: int = 1) -> list[int]:
-        """Lee registros holding vía servicio (relectura de verificación)."""
+        """Lee registros holding vía servicio (relectura de verificación).
+
+        La generación actual usa el campo ``count``; la legada,
+        ``quantity``.
+        """
+        servicio = self._servicio(
+            "leer", SERVICIO_LEER_ACTUAL, SERVICIO_LEER_LEGADO
+        )
+        campo = (
+            CAMPO_CANTIDAD if servicio == SERVICIO_LEER_ACTUAL
+            else CAMPO_CANTIDAD_LEGADO
+        )
         respuesta = await self._invocar(
-            SERVICIO_LEER,
-            {CAMPO_REGISTRO: int(addr), "quantity": int(cantidad)},
+            servicio,
+            {CAMPO_REGISTRO: int(addr), campo: int(cantidad)},
             con_respuesta=True,
         )
         return _extraer_registros(respuesta, cantidad)

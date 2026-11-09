@@ -434,10 +434,50 @@ class TestEscritorSolarman:
         llamada = hass.services.async_call.call_args
         assert llamada.args == (
             "solarman",
-            "write_single_register",
+            # Generación actual de la integración Solarman (25.x);
+            # has_service truthy del mock elige el nombre nuevo
+            "write_holding_register",
             {"device": "device-x", "register": 210, "value": 50},
         )
         assert llamada.kwargs == {"blocking": True}
+
+    @pytest.mark.asyncio
+    async def test_generacion_legada_de_servicios(self):
+        """Solo expone write_single_register → usa el legado."""
+        hass = self._hass()
+        hass.services.has_service = MagicMock(
+            side_effect=lambda dominio, nombre: (
+                nombre == "write_single_register"
+            )
+        )
+        escritor = EscritorSolarman(hass, "device-x")
+
+        await escritor.escribir(210, 50)
+
+        tipo, servicio, _ = hass.services.async_call.call_args.args
+        assert (tipo, servicio) == ("solarman", "write_single_register")
+
+    @pytest.mark.asyncio
+    async def test_sin_servicios_de_escritura_error_explicito(self):
+        hass = self._hass()
+        hass.services.has_service = MagicMock(return_value=False)
+        escritor = EscritorSolarman(hass, "device-x")
+
+        with pytest.raises(ErrorEscrituraSolarman, match="no expone"):
+            await escritor.escribir(210, 50)
+
+    @pytest.mark.asyncio
+    async def test_leer_actual_campo_count(self):
+        """Generación actual: read_multiple_holding_registers con count,
+        respuesta {registro: valor} como la integral real."""
+        hass = self._hass()
+        hass.services.async_call = AsyncMock(return_value={210: 42})
+        escritor = EscritorSolarman(hass, "device-x")
+
+        assert await escritor.leer(210, 1) == [42]
+        tipo, servicio, carga = hass.services.async_call.call_args.args
+        assert (tipo, servicio) == ("solarman", "read_multiple_holding_registers")
+        assert carga == {"device": "device-x", "register": 210, "count": 1}
 
     @pytest.mark.asyncio
     async def test_resolucion_automatica_primer_device(self):

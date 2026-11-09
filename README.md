@@ -1,6 +1,6 @@
 # Optimizador Batería OMIE
 
-![Versión](https://img.shields.io/badge/versión-0.10.0-blue)
+![Versión](https://img.shields.io/badge/versión-0.11.3-blue)
 ![F2](https://img.shields.io/badge/F2-telemetría-completada-brightgreen)
 ![F3](https://img.shields.io/badge/F3-plan%20dry--run-completada-brightgreen)
 ![F4](https://img.shields.io/badge/F4-control%20real-completada-brightgreen)
@@ -53,11 +53,11 @@ Calcula un **plan por tramos de 15 min** priorizando autoconsumo y aplicando arb
 
 ### Fase F4 (Completada) ✅ — Executor de control del inversor
 
-Aplica el plan de F3 **escribiendo en el inversor** con todas las salvaguardas. La escritura se hace **vía los servicios de la integración oficial Solarman** (`solarman.write_single_register` / `solarman.write_multiple_registers`; el deprecado `write_multiple_holding_registers` no se usa) y la verificación relee los registros con `solarman.read_holding_registers`. **Sin gateway RS485 y sin `solarman_modbus`.**
+Aplica el plan de F3 **escribiendo en el inversor** con todas las salvaguardas. La escritura se hace **vía los servicios de la integración oficial Solarman** (`solarman.write_holding_register` / `solarman.write_multiple_holding_registers` en la generación 25.x, con detección en caliente de los nombres legados `write_single_register`/`write_multiple_registers`) y la verificación relee los registros con `solarman.read_multiple_holding_registers`. **Sin gateway RS485 y sin `solarman_modbus`.**
 
 - **Doble puerta de activación**: `switch.*_control_activo`, **por defecto OFF**. Con OFF, todas las acciones se **simulan** (se traducen, se loguean con prefijo `[DRY-RUN]` y se auditan con `ejecutada: false`) pero **nunca se escribe**. La activación real es un acto explícito; se recomienda la primera en **valle nocturno**, observada contra la APP Solarman.
 - **Traducción plan → registros solo desde `registers.yaml`** (sección `control`): `CARGA_RED` = habilitar carga red (232) + corriente de carga desde red (230); el límite de carga de batería (210) refleja `potencia_max_carga` (nunca la corriente del tramo, para no estrangular la carga solar); `AUTOCONSUMO` = valores seguros (232=0, 230=0); SOC mínimo (217) y de recuperación (218) solo al activar o cambiar parámetros. **Ninguna dirección ni límite en código.**
-- **Write-verify**: tras cada escritura real, espera configurable (`latencia_verify_s`, default 3 s) y relectura vía `solarman.read_holding_registers`. Si la relectura falla → verificación *soft* marcada `parcial`. **3 fallos consecutivos → `fallback`**: valores seguros una vez, `control_activo` a OFF automático + notificación persistente. Reactivación solo manual.
+- **Write-verify**: tras cada escritura real, espera configurable (`latencia_verify_s`, default 3 s) y relectura vía `solarman.read_multiple_holding_registers`. Si la relectura falla → verificación *soft* marcada `parcial`. **3 fallos consecutivos → `fallback`**: valores seguros una vez, `control_activo` a OFF automático + notificación persistente. Reactivación solo manual.
 - **Rate limiter**: máx. **12 escrituras/hora** reales (configurable 1–48), con **idempotencia** (no se reescriben valores ya aplicados). Superado el límite → aplaza al siguiente tramo con WARNING.
 - **Watchdog**: telemetría obsoleta (> 2× intervalo) o plan ausente en cambio de tramo → no escribe; si hay carga desde red activa → fallback.
 - **Guard de potencia contratada**: importación > 95 % de `potencia_contratada` (5,75 kW) → reduce la corriente de carga; ≥ 100 % → 0 A inmediato. Fuente preferente: `entity_id_potencia_red` (registro Deye 169, convención >0 = importación); sin ella, cálculo derivado desde telemetría.
@@ -523,7 +523,7 @@ pytest -v
 ruff check custom_components/optimizador_bateria_omie/
 ```
 
-Los tests de F4 mockean los servicios `solarman.write_*` / `solarman.read_holding_registers` — la suite nunca toca hardware real, y ninguna escritura real se ejecuta desde el desarrollo.
+Los tests de F4 mockean los servicios `solarman.write_*` / `solarman.read_multiple_holding_registers` (ambas generaciones) — la suite nunca toca hardware real, y ninguna escritura real se ejecuta desde el desarrollo.
 
 ## Licencia
 
