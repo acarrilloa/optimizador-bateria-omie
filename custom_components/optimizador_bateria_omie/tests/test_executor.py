@@ -408,6 +408,32 @@ class TestActivacion:
         assert executor.estado == "inactivo"
         assert "abortada" in executor.estado_detalle["motivo"]
 
+    @pytest.mark.asyncio
+    async def test_actualizar_limites_soc_off_no_escribe(
+        self, hass, mapa, escritor
+    ):
+        """0.11.6: con control_activo OFF no se toca el inversor."""
+        executor = _executor(hass, mapa, escritor, _tramo(ACCION_MANTENER))
+
+        await executor.async_actualizar_limites_soc()
+
+        escritor.escribir.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_actualizar_limites_soc_on_escribe(
+        self, hass, mapa, escritor
+    ):
+        """0.11.6: con control_activo ON reescribe 217/218 al mover
+        el number de SOC mínimo."""
+        executor = _executor(hass, mapa, escritor, _tramo(ACCION_MANTENER))
+        executor._control_activo = True
+
+        await executor.async_actualizar_limites_soc()
+
+        escrituras = _escrituras(escritor)
+        assert escrituras[217] == 15
+        assert escrituras[218] == 20
+
 
 class TestEscritorSolarman:
     def _hass(self, devices=None):

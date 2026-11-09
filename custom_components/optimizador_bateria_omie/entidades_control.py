@@ -11,7 +11,7 @@
 Ninguna entidad escribe en el inversor por sí misma: todo pasa por el
 ``EjecutorControl`` y sus salvaguardas.
 """
-# versión 0.10.0
+# versión 0.11.6
 
 import logging
 from typing import Any
@@ -120,10 +120,12 @@ class NumberParametroPlanner(NumberEntity):
         paso: float,
         default: float,
         unidad: str | None = None,
+        ejecutor=None,
     ) -> None:
         """Inicializa el number con su parámetro del plan."""
         self._entry = entry
         self._coordinador_plan = coordinador_plan
+        self._ejecutor = ejecutor
         self._clave = clave
         self._default = default
         self._attr_name = nombre
@@ -145,7 +147,13 @@ class NumberParametroPlanner(NumberEntity):
         return float(self._entry.data.get(self._clave, self._default))
 
     async def async_set_native_value(self, valor: float) -> None:
-        """Escribe en entry.data y recalcula el plan inmediatamente."""
+        """Escribe en entry.data y recalcula el plan inmediato.
+
+        Con ``soc_min`` y ``control_activo`` ON, además reescribe los
+        límites 217/218 del inversor (0.11.6): el plan y el registro
+        real (visible en la entidad Solarman ``battery_low_soc``)
+        quedan sincronizados sin esperar a la reactivación.
+        """
         self._entry.data[self._clave] = round(float(valor), 6)
         _LOGGER.info(
             "Parámetro %s = %s (en caliente); recalculando el plan",
@@ -153,9 +161,16 @@ class NumberParametroPlanner(NumberEntity):
             valor,
         )
         await self._coordinador_plan.async_recalcular("number")
+        if (
+            self._clave == CONF_SOC_MIN
+            and self._ejecutor is not None
+        ):
+            await self._ejecutor.async_actualizar_limites_soc()
 
 
-def crear_numbers(entry, coordinador_plan) -> list[NumberParametroPlanner]:
+def crear_numbers(entry, coordinador_plan, ejecutor=None) -> list[
+    NumberParametroPlanner
+]:
     """Las 8 entities number de los parámetros del plan (§5 del PLAN_F4)."""
     definiciones = [
         (
@@ -211,6 +226,7 @@ def crear_numbers(entry, coordinador_plan) -> list[NumberParametroPlanner]:
             paso,
             default,
             unidad,
+            ejecutor,
         )
         for (
             clave,

@@ -1,5 +1,5 @@
 """Plataforma number: parámetros del plan editables en caliente (F4)."""
-# versión 0.10.0
+# versión 0.11.6
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -16,5 +16,9 @@ async def async_setup_entry(
     """Añade las 8 entities number de los parámetros del plan."""
     datos = hass.data[DOMAIN][entry.entry_id]
     async_add_entities(
-        crear_numbers(entry, datos["coordinador_plan"])
+        crear_numbers(
+            entry,
+            datos["coordinador_plan"],
+            datos.get("executor"),
+        )
     )

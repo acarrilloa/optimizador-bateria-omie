@@ -16,7 +16,7 @@ desde cualquier fuente) se fija a la corriente equivalente de
 ``potencia_max_carga`` (valor constante entre tramos, nunca la corriente
 de un tramo) para no estrangular la carga solar.
 """
-# versión 0.11.5
+# versión 0.11.6
 
 import asyncio
 import logging
@@ -1044,6 +1044,20 @@ class EjecutorControl:
             self._control_activo = False
             _LOGGER.info("control_activo OFF: modo dry-run forzado")
         await self.async_aplicar_tramo("control_activo")
+
+    async def async_actualizar_limites_soc(self) -> None:
+        """Reescribe 217/218 al cambiar ``soc_min`` en caliente (0.11.6).
+
+        Solo con ``control_activo`` ON: con OFF no se toca el inversor
+        (dry-run) y los límites se escribirán al activar.
+        """
+        if not self._control_activo:
+            _LOGGER.info(
+                "Límites SOC no reescritos (control_activo OFF): se "
+                "aplicarán al activar"
+            )
+            return
+        await self._escribir_limites_soc()
 
     async def _escribir_limites_soc(self) -> None:
         """Escribe 217/218 al activar (218 > 217 siempre, clamp)."""

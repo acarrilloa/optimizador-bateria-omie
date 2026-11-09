@@ -6,8 +6,10 @@ import pytest
 
 from custom_components.optimizador_bateria_omie.const import (
     CONF_PRECIO_MAX_COMPRA,
+    CONF_SOC_MAX,
     CONF_SOC_MIN,
     DEFAULT_PRECIO_MAX_COMPRA,
+    DEFAULT_SOC_MAX,
     DEFAULT_SOC_MIN,
 )
 from custom_components.optimizador_bateria_omie.entidades_control import (
@@ -110,6 +112,36 @@ class TestNumbers:
 
         assert entry.data[CONF_SOC_MIN] == pytest.approx(25.0)
         coordinador.async_recalcular.assert_awaited_once_with("number")
+
+    @pytest.mark.asyncio
+    async def test_soc_min_sincroniza_limites_del_inversor(self):
+        """0.11.6: mover el number de SOC mínimo reescribe 217/218."""
+        ejecutor = MagicMock()
+        ejecutor.async_actualizar_limites_soc = AsyncMock()
+        coordinador = _coordinador_plan()
+        entry = _entry()
+        number = NumberParametroPlanner(
+            entry, coordinador, CONF_SOC_MIN, "SOC mínimo", "uid",
+            5.0, 50.0, 1.0, DEFAULT_SOC_MIN, "%", ejecutor=ejecutor,
+        )
+
+        await number.async_set_native_value(20.0)
+
+        ejecutor.async_actualizar_limites_soc.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_otro_parametro_no_toca_limites(self):
+        ejecutor = MagicMock()
+        ejecutor.async_actualizar_limites_soc = AsyncMock()
+        number = NumberParametroPlanner(
+            _entry(), _coordinador_plan(), CONF_SOC_MAX, "SOC máximo",
+            "uid", 50.0, 100.0, 1.0, DEFAULT_SOC_MAX, "%",
+            ejecutor=ejecutor,
+        )
+
+        await number.async_set_native_value(90.0)
+
+        ejecutor.async_actualizar_limites_soc.assert_not_awaited()
 
     def test_rango_precio_max_compra_0_a_1(self):
         """Corrección 7: 0-1 €/kWh (precio efectivo hasta ~0,35)."""
