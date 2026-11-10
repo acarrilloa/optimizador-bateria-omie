@@ -5,7 +5,7 @@ arranque, al llegar precios nuevos (D+1 ~13:45), al cambiar de tramo
 (cada 15 min), al togglear ``festivo_hoy``, por desviación de SOC y con
 el servicio ``regenerate_plan``. **Nunca escribe en el inversor.**
 """
-# versión 0.10.1
+# versión 0.12.0
 
 import logging
 from collections.abc import Callable

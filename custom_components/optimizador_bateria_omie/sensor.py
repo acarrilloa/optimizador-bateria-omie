@@ -1,5 +1,5 @@
 """Plataforma de sensores para la integración Optimizador Batería OMIE."""
-# versión 0.10.1
+# versión 0.12.0
 
 import logging
 

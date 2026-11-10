@@ -1,5 +1,5 @@
 """Plataforma switch: Festivo hoy (F3) y Control activo (F4)."""
-# versión 0.10.1
+# versión 0.12.0
 
 import logging
 

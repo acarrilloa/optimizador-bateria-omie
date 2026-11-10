@@ -11,7 +11,7 @@
 Ninguna entidad escribe en el inversor por sí misma: todo pasa por el
 ``EjecutorControl`` y sus salvaguardas.
 """
-# versión 0.11.6
+# versión 0.12.0
 
 import logging
 from typing import Any

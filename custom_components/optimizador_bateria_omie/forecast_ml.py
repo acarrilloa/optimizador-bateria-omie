@@ -13,7 +13,7 @@ periodicidad diaria), ``dia_semana`` (sin/cos), ``es_festivo``,
 entidad) y ``consumo_mismo_tramo_{7,14,21,28}d`` (NaN si el histórico
 no llega).
 """
-# versión 0.12.0-U1
+# versión 0.12.0
 
 import logging
 from dataclasses import dataclass

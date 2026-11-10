@@ -1,6 +1,6 @@
 # Optimizador Batería OMIE
 
-![Versión](https://img.shields.io/badge/versión-0.11.5-blue)
+![Versión](https://img.shields.io/badge/versión-0.11.6-blue)
 ![F2](https://img.shields.io/badge/F2-telemetría-completada-brightgreen)
 ![F3](https://img.shields.io/badge/F3-plan%20dry--run-completada-brightgreen)
 ![F4](https://img.shields.io/badge/F4-control%20real-completada-brightgreen)
@@ -76,9 +76,17 @@ Anticipa parte de la auditoría prevista para F5: mide el **ahorro real** acumul
 - **Simplificaciones conocidas** (mejorables en F5): la exportación se netea contra la importación al mismo precio (sin precio de excedentes específico); la potencia del tramo se aproxima con la lectura de telemetría en el cierre del tramo; no descuenta pérdidas de descarga.
 - **Corrección de `switch.festivo_hoy`**: el estado ahora **persiste** en `hass.storage` (sobrevive reinicios del mismo día) y se **apaga automáticamente al cambiar de día**. Además, con el interruptor activado el precio efectivo y el plan tratan el día completo como **valle** (via `ModeloTarifa.obtener_precio_efectivo(..., festivo_manual=True)`); la tarifa facturada real solo cambia en festivos de calendario, no por vacaciones propias.
 
+### Fase F5 (0.12.0) — Forecaster ML + Planificador LP ✅
+
+- **Forecaster ML** (`forecast_ml.py`, scikit-learn HistGradientBoosting): features cíclicas de tramo/día, festivos, lags de consumo a 7/14/21/28 días y temperatura (clima AEMET opcional). **Guardrail de adopción (D-F5.2)**: solo predice si su MAPE del holdout cronológico mejora el del perfil estadístico de F3; si no, el perfil sigue mandando — nunca se degrada. `festivo_hoy` manual cae siempre al perfil (la marca no está en las features).
+- **Reentrenamiento diario** a las 04:35 (tras el perfil) en segundo plano (executor job); modelo persistido en `config/optimizador_bateria_omie/modelo_consumo.joblib` (sobrevive a HACS). Sensor diagnóstico `sensor.*_forecast_quality` con MAPE ML vs perfil, fuente activa y tamaño del entrenamiento.
+- **Planificador LP** (`planner_lp.py`, PuLP/CBC): óptimo global de hoy+mañana con el mismo contrato que el greedy — el executor de F4 y todas sus salvaguardas quedan intactos. Exclusión carga/descarga e import/export por tramo, curtail solo de FV, restricción dura de importación, y los guardarraíles absolutos como reglas (tope de compra → red solo para la casa; piso de venta). Selector en caliente `switch.*_usar_planificador_lp` (default **greedy**); si el LP falla, recálculo automático con greedy — nunca sin plan.
+- **Auditoría refinada**: energía por tramo con la **media real de las lecturas** de telemetría del tramo (ya no la lectura de cierre) y exportación valorada al precio × **`number.precio_excedentes`** (factor 0–1, default 1; nunca a negativos).
+- **Clima AEMET (opcional)**: en *Reconfigurar*, `entity_id_clima` (weather de la AEMET, temperatura prevista) y `entity_id_temp_historico` (sensor de temperatura para las features de entrenamiento). Sin configurar, el modelo ignora la feature.
+- **Dependencias nuevas**: `scikit-learn` y `pulp` (anclado a 3.x: la 4.x es un rewrite con API inestable). HACS las instalará en el Yellow al actualizar.
+
 ### Fases futuras 🚧
 
-- **F5**: Predicción ML + Optimización con programación lineal (la auditoría de ahorro básica ya está entregada en 0.10.1)
 - **F6**: Dashboard Lovelace + Notificaciones + Informes
 
 ## Requisitos
@@ -287,7 +295,7 @@ Ocho sensores: `soc_bateria`, `potencia_bateria` (**+descarga/−carga**), `corr
 
 - `switch.*_control_activo` — habilitador del control real, **default OFF**. Con OFF todo se simula (dry-run) y se audita; con ON se escribe bajo salvaguardas. 3 fallos de verificación → OFF automático + notificación persistente (reactivación manual).
 - `sensor.*_estado_control` (diagnóstico) — `inactivo` (switch OFF) / `dry_run` (ON pero la acción actual se simula por gradual) / `activo` (escribiendo de verdad) / `fallback_bloqueado` (requiere intervención). Atributos: motivo, fallos consecutivos, escrituras de la última hora, último verify, modo manual.
-- **Ocho `number` calientes** — escriben en `entry.data` y disparan recálculo del plan en ≤ 60 s: `precio_max_compra`, `precio_min_venta`, `margen_arbitraje`, `soc_min`, `soc_max`, `potencia_max_carga`, `potencia_max_descarga`, `eficiencia_round_trip`.
+- **Nueve `number` calientes** — escriben en `entry.data` y disparan recálculo del plan en ≤ 60 s: `precio_max_compra`, `precio_min_venta`, `margen_arbitraje`, `soc_min`, `soc_max`, `potencia_max_carga`, `potencia_max_descarga`, `eficiencia_round_trip`, `precio_excedentes`.
 
 ### Auditoría de ahorro (0.10.1) ✅
 

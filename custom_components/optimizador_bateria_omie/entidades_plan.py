@@ -3,7 +3,7 @@
 Todas comparten el dispositivo de F1/F2 y se repintan por callback del
 ``CoordinadorPlan`` (sin polling). Ninguna toca el inversor.
 """
-# versión 0.10.2
+# versión 0.12.0
 
 import logging
 from dataclasses import asdict

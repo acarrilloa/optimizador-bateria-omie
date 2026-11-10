@@ -1,6 +1,6 @@
 # PLAN_F5 — ML + Programación Lineal (MAPE < 20 %, ahorro real medible)
 
-Estado: **borrador para revisión del usuario — NO implementar hasta confirmación**
+Estado: **implementado (0.12.0) — U1..U6 completadas; criterio MAPE con datos reales en observación del usuario**
 Base: SPEC §2.4, RF-04/RF-05/RF-06, §5.4, §5.5, §8 (F5) y §12.2. Código actual: v0.11.6 (341 tests… 335 tras 0.11.6).
 
 ---
