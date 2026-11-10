@@ -1,6 +1,6 @@
 # Optimizador Batería OMIE
 
-![Versión](https://img.shields.io/badge/versión-0.11.6-blue)
+![Versión](https://img.shields.io/badge/versión-0.12.0-blue)
 ![F2](https://img.shields.io/badge/F2-telemetría-completada-brightgreen)
 ![F3](https://img.shields.io/badge/F3-plan%20dry--run-completada-brightgreen)
 ![F4](https://img.shields.io/badge/F4-control%20real-completada-brightgreen)
@@ -83,7 +83,7 @@ Anticipa parte de la auditoría prevista para F5: mide el **ahorro real** acumul
 - **Planificador LP** (`planner_lp.py`, PuLP/CBC): óptimo global de hoy+mañana con el mismo contrato que el greedy — el executor de F4 y todas sus salvaguardas quedan intactos. Exclusión carga/descarga e import/export por tramo, curtail solo de FV, restricción dura de importación, y los guardarraíles absolutos como reglas (tope de compra → red solo para la casa; piso de venta). Selector en caliente `switch.*_usar_planificador_lp` (default **greedy**); si el LP falla, recálculo automático con greedy — nunca sin plan.
 - **Auditoría refinada**: energía por tramo con la **media real de las lecturas** de telemetría del tramo (ya no la lectura de cierre) y exportación valorada al precio × **`number.precio_excedentes`** (factor 0–1, default 1; nunca a negativos).
 - **Clima AEMET (opcional)**: en *Reconfigurar*, `entity_id_clima` (weather de la AEMET, temperatura prevista) y `entity_id_temp_historico` (sensor de temperatura para las features de entrenamiento). Sin configurar, el modelo ignora la feature.
-- **Dependencias nuevas**: `scikit-learn` y `pulp` (anclado a 3.x: la 4.x es un rewrite con API inestable). HACS las instalará en el Yellow al actualizar.
+- **Dependencias nuevas**: `numpy` y `pulp` (anclado a 3.x: la 4.x es un rewrite con API inestable). **0.12.1**: scikit-learn eliminado — no publica wheels musl (Alpine) en ARM64 y el Yellow no puede instalarlo; el forecaster se reimplementó como **regresión ridge en numpy puro** (misma interfaz, features, banda y guardrail, entrenamiento más ligero aún).
 
 ### Fases futuras 🚧
 

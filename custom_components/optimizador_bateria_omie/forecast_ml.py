@@ -1,7 +1,9 @@
 """Forecaster ML de consumo por tramos de 15 min (F5, RF-05 capa 2).
 
-Dataset de features y entrenamiento con ``HistGradientBoostingRegressor``
-(scikit-learn). El modelo **nunca sustituye a ciegas** al perfil
+Dataset de features y entrenamiento con **ridge en numpy puro**
+(0.12.1: scikit-learn no publica wheels musl/ARM64 y el HA Yellow no
+puede instalarlo; la interfaz pública no cambia). El modelo **nunca
+sustituye a ciegas** al perfil
 estadístico de F3: se adopta solo si el MAPE del backtest lo mejora
 (guardrail de adopción, D-F5.2). Persistencia en
 ``config/optimizador_bateria_omie/modelo_consumo.joblib`` (fuera de
@@ -13,7 +15,7 @@ periodicidad diaria), ``dia_semana`` (sin/cos), ``es_festivo``,
 entidad) y ``consumo_mismo_tramo_{7,14,21,28}d`` (NaN si el histórico
 no llega).
 """
-# versión 0.12.0
+# versión 0.12.1
 
 import logging
 from dataclasses import dataclass
@@ -31,7 +33,7 @@ _LOGGER = logging.getLogger(__name__)
 LAGS_DIAS = (7, 14, 21, 28)
 
 # Orden fijo de columnas del dataset; los valores faltantes viajan
-# como NaN (HistGradientBoosting los tolera de forma nativa)
+# como NaN (el ridge los imputa con la media de columna del entrenar)
 COLUMNAS = (
     "tramo_sen",
     "tramo_cos",
@@ -217,71 +219,112 @@ def ruta_modelo_por_defecto(hass) -> Path:
 
 
 class ForecasterML:
-    """Modelo de consumo por tramo (HistGradientBoostingRegressor).
+    """Modelo de consumo por tramo: ridge en numpy puro (0.12.1).
 
-    La **banda** p10/p90 se deriva de los cuantiles de los residuos
-    del entrenamiento (offset aditivo global, documentado como
-    simplificación): p10 = p50 + q10(residuo), p90 = p50 + q90(residuo).
+    F5-U2 lo implementó con ``HistGradientBoostingRegressor``
+    (scikit-learn), pero scikit-learn **no publica wheels musl
+    (Alpine/ARM64)** y el HA Yellow no puede instalarlo — se
+    reimplementa con **regresión ridge (forma cerrada, numpy)** con las
+    MISMAS features, banda por cuantiles de residuos, MAPE de backtest
+    y persistencia. La interfaz pública no cambia; el guardrail de
+    adopción (D-F5.2) sigue decidiendo ML vs perfil por MAPE.
 
-    El entrenamiento es **bloqueante** (CPU): el llamador debe wrappear
-    con ``hass.async_add_executor_job`` (AGENTS §1).
+    Los NaN de features se imputan con la media de columna del
+    entrenamiento (guardada para predicción). El entrenamiento es
+    **bloqueante** (CPU): el llamador debe wrappear con
+    ``hass.async_add_executor_job`` (AGENTS §1).
     """
 
-    RANDOM_STATE = 42
+    LAMBDA = 1.0  # regularización ridge (intercepto sin penalizar)
 
-    def __init__(self, ruta_modelo: Path | None = None) -> None:
+    def __init__(self, ruta_modelo=None) -> None:
         self._ruta_modelo = ruta_modelo
-        self._modelo = None
+        self._pesos: np.ndarray | None = None
+        self._medias_columnas: np.ndarray | None = None
         self._offset_p10 = 0.0
         self._offset_p90 = 0.0
-        # Columnas con algún dato en entrenamiento: HistGB (≥1.9)
-        # falla con features 100 % NaN (p. ej. temperatura sin clima),
-        # así que se maskan y persisten con el modelo
-        self._validas = np.ones(len(COLUMNAS), dtype=bool)
-        self.metricas: dict[str, float | int | str | bool] = {}
+        self.metricas: dict = {}
+
+    # ─── Estado ───
 
     @property
     def entrenado(self) -> bool:
         """¿Hay modelo cargado/entrenado?"""
-        return self._modelo is not None
+        return self._pesos is not None
 
     @property
     def adoptado(self) -> bool:
         """¿El ML superó al perfil estadístico (guardrail D-F5.2)?"""
         return bool(self.metricas.get("adoptado"))
 
-    def entrenar(self, dataset: DatasetML) -> None:
-        """Ajusta el modelo y la banda con el dataset dado."""
-        from sklearn.ensemble import HistGradientBoostingRegressor
+    # ─── Preparación de matrices ───
 
-        self._validas = ~np.isnan(dataset.x).all(axis=0)
-        if not self._validas.any():
-            raise ValueError("Dataset sin ninguna feature con datos")
-        self._modelo = HistGradientBoostingRegressor(
-            random_state=self.RANDOM_STATE,
-        )
-        self._modelo.fit(dataset.x[:, self._validas], dataset.y)
-        residuos = dataset.y - self._modelo.predict(
-            dataset.x[:, self._validas]
-        )
+    def _imputar(self, x: "np.ndarray") -> "np.ndarray":
+        """NaN → media de columna del entrenamiento (0 si toda-NaN)."""
+        x = np.atleast_2d(np.asarray(x, dtype=np.float64))
+        if self._medias_columnas is None:
+            return np.nan_to_num(x, nan=0.0)
+        x = x.copy()
+        for j in range(x.shape[1]):
+            columna = np.isnan(x[:, j])
+            if columna.any():
+                x[columna, j] = self._medias_columnas[j]
+        return x
+
+    @staticmethod
+    def _con_intercepto(x: "np.ndarray") -> "np.ndarray":
+        n = x.shape[0]
+        return np.hstack([np.ones((n, 1)), x])
+
+    # ─── Entrenamiento / evaluación ───
+
+    def entrenar(self, dataset: DatasetML) -> None:
+        """Ajusta el ridge y la banda con el dataset dado."""
+        if len(dataset) == 0:
+            raise ValueError("Dataset vacío")
+        x = np.asarray(dataset.x, dtype=np.float64)
+        y = np.asarray(dataset.y, dtype=np.float64)
+
+        # Imputación: medias de columna (0 en columnas sin datos)
+        medias = np.zeros(x.shape[1])
+        for j in range(x.shape[1]):
+            validos = x[:, j][~np.isnan(x[:, j])]
+            if validos.size:
+                medias[j] = validos.mean()
+        self._medias_columnas = medias
+        x = self._imputar(x)
+
+        xd = self._con_intercepto(x)
+        d = xd.shape[1]
+        regularizacion = self.LAMBDA * np.eye(d)
+        regularizacion[0, 0] = 0.0  # intercepto sin penalizar
+        try:
+            self._pesos = np.linalg.solve(
+                xd.T @ xd + regularizacion, xd.T @ y
+            )
+        except np.linalg.LinAlgError as err:
+            raise ValueError(f"Ridge sin solución: {err}") from err
+
+        residuos = y - xd @ self._pesos
         self._offset_p10 = float(np.quantile(residuos, 0.10))
         self._offset_p90 = float(np.quantile(residuos, 0.90))
         self.metricas["n_entrenamiento"] = len(dataset)
 
     def evaluar_mape(self, dataset: DatasetML) -> float | None:
         """MAPE % del dataset dado (None sin modelo o sin datos)."""
-        if self._modelo is None or len(dataset) == 0:
+        if self._pesos is None or len(dataset) == 0:
             return None
-        yhat = self._modelo.predict(dataset.x[:, self._validas])
-        y = dataset.y
+        yhat = self.predecir_array(dataset.x)
+        y = np.asarray(dataset.y, dtype=np.float64)
         divisor = np.maximum(np.abs(y), 1.0)
         return float(np.mean(np.abs(y - yhat) / divisor) * 100.0)
 
     def predecir_array(self, x: np.ndarray) -> np.ndarray:
         """p50 (W) por fila; banda disponible como offsets."""
-        if self._modelo is None:
+        if self._pesos is None:
             raise RuntimeError("ForecasterML sin entrenar")
-        return self._modelo.predict(x[:, self._validas])
+        xd = self._con_intercepto(self._imputar(x))
+        return xd @ self._pesos
 
     @property
     def banda(self) -> tuple[float, float]:
@@ -291,33 +334,35 @@ class ForecasterML:
     # ─── Persistencia (bloqueante: usar executor job) ───
 
     def guardar(self) -> None:
-        """Serializa modelo, banda y métricas con joblib."""
-        if self._ruta_modelo is None or self._modelo is None:
+        """Serializa pesos, imputación, banda y métricas (pickle stdlib)."""
+        if self._ruta_modelo is None or self._pesos is None:
             return
-        self._ruta_modelo.parent.mkdir(parents=True, exist_ok=True)
-        from joblib import dump
+        import pickle
 
-        dump(
-            {
-                "modelo": self._modelo,
-                "offset_p10": self._offset_p10,
-                "offset_p90": self._offset_p90,
-                "validas": self._validas,
-                "metricas": dict(self.metricas),
-            },
-            self._ruta_modelo,
-        )
+        self._ruta_modelo.parent.mkdir(parents=True, exist_ok=True)
+        with open(self._ruta_modelo, "wb") as fichero:
+            pickle.dump(
+                {
+                    "pesos": self._pesos,
+                    "medias": self._medias_columnas,
+                    "offset_p10": self._offset_p10,
+                    "offset_p90": self._offset_p90,
+                    "metricas": dict(self.metricas),
+                },
+                fichero,
+            )
 
     def cargar(self) -> bool:
         """Restaura modelo+banda+métricas; False si no existe."""
         if self._ruta_modelo is None or not self._ruta_modelo.exists():
             return False
-        from joblib import load
+        import pickle
 
-        datos = load(self._ruta_modelo)
-        self._modelo = datos["modelo"]
+        with open(self._ruta_modelo, "rb") as fichero:
+            datos = pickle.load(fichero)
+        self._pesos = datos["pesos"]
+        self._medias_columnas = datos["medias"]
         self._offset_p10 = datos["offset_p10"]
         self._offset_p90 = datos["offset_p90"]
-        self._validas = datos.get("validas", np.ones(len(COLUMNAS), dtype=bool))
         self.metricas = datos.get("metricas", {})
         return True

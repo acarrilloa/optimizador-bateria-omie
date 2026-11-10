@@ -14,7 +14,7 @@
 
 ## Qué falta / requiere el usuario
 
-- **Instalar 0.12.0 en el Yellow** (HACS traerá scikit-learn y PuLP; el primer arranque reentrena en segundo plano con el histórico del recorder ≥ 2 días; luego diariamente a las 04:35).
+- **Instalar 0.12.1 en el Yellow** (HACS traerá numpy y PuLP; el primer arranque reentrena en segundo plano con el histórico del recorder ≥ 2 días; luego diariamente a las 04:35). **Nota**: 0.12.0 no cargó en HAOS — scikit-learn sin wheels musl/ARM64; 0.12.1 lo sustituye por ridge en numpy puro.
 - Observar `forecast_quality` unos días y **decidir cuándo conmutar a LP** (el switch es en caliente; menos de una semana si los números lo aconsejan — sin coste algorítmico).
 - Configurar el clima en Reconfigurar cuando desee activar la feature (IDs reales de su AEMET).
 - Criterio de salida §8 (MAPE < 20 % con datos reales y ahorro medible): se cierra con la observación del usuario, no en desarrollo.
