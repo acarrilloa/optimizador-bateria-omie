@@ -65,6 +65,8 @@ CONF_DESVIACION_SOC_REPLAN = "desviacion_soc_replan_pct"
 CONF_FESTIVOS_LOCALES = "festivos_locales"
 CONF_CAPACIDAD_BATERIA_KWH = "capacidad_bateria_kwh"
 CONF_ENTITY_ID_PREVISION_FV_HOY = "entity_id_prevision_fv_hoy"
+CONF_ENTITY_ID_CLIMA = "entity_id_clima"  # weather.* AEMET (F5-U5)
+CONF_ENTITY_ID_TEMP_HISTORICO = "entity_id_temp_historico"  # sensor temps (F5-U5)
 CONF_ENTITY_ID_PREVISION_FV_MANANA = "entity_id_prevision_fv_manana"
 
 DEFAULT_VENTANA_HISTORICO = 28

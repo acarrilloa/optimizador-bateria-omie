@@ -100,3 +100,15 @@ def fixture_ranuras_hoy():
         )
         for i in range(96)
     ]
+
+
+@pytest.fixture
+def hass():
+    """Hass mock genérico (clima F5-U5): executor directo."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    h = MagicMock()
+    h.async_add_executor_job = AsyncMock(
+        side_effect=lambda fn, *args: fn(*args)
+    )
+    return h

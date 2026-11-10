@@ -25,8 +25,10 @@ from pathlib import Path
 from typing import Any
 
 from custom_components.optimizador_bateria_omie.const import (
+    CONF_ENTITY_ID_CLIMA,
     CONF_ENTITY_ID_PREVISION_FV_HOY,
     CONF_ENTITY_ID_PREVISION_FV_MANANA,
+    CONF_ENTITY_ID_TEMP_HISTORICO,
     CONF_FESTIVOS_LOCALES,
     CONF_VENTANA_HISTORICO,
     DEFAULT_VENTANA_HISTORICO,
@@ -279,7 +281,9 @@ class PredictorConsumo:
             return None
 
         dataset = construir_dataset(
-            muestras, self._festivos_del_periodo(muestras)
+            muestras,
+            self._festivos_del_periodo(muestras),
+            temperaturas=await self._temperaturas_entrenamiento(dias),
         )
         corte = int(len(dataset) * 0.7)
         entreno = DatasetML(
@@ -353,6 +357,20 @@ class PredictorConsumo:
             return None
         return (errores / n) * 100.0
 
+    async def _temperaturas_entrenamiento(self, dias: int) -> dict:
+        """Medias diarias históricas (F5-U5) — {} si no hay sensor.
+
+        La consulta al recorder es bloqueante: executor job.
+        """
+        from custom_components.optimizador_bateria_omie import clima
+
+        entity_id = self._params.get(CONF_ENTITY_ID_TEMP_HISTORICO)
+        if not entity_id:
+            return {}
+        return await self.hass.async_add_executor_job(
+            clima.temperaturas_diarias, self.hass, entity_id, dias
+        )
+
     def _usar_ml(self, fecha: date, festivo_hoy: bool) -> bool:
         """¿Predice el ML para ``fecha``? (guardrail + festivo manual)."""
         hoy = datetime.now().astimezone().date()
@@ -363,9 +381,21 @@ class PredictorConsumo:
         return self._ml.entrenado and self._ml.adoptado
 
     def _predecir_ml(self, fecha: date) -> list[PercentilesTramo]:
-        """Predicción p10/p50/p90 del ML para los 96 tramos."""
+        """Predicción p10/p50/p90 del ML para los 96 tramos.
+
+        Con ``entity_id_clima`` configurado (F5-U5, AEMET), la
+        temperatura media prevista entra como feature; si no, NaN.
+        """
+        from custom_components.optimizador_bateria_omie import clima
+
         festivos = {fecha} if self._es_fecha_festivo(fecha) else set()
-        x = predecir_features(fecha, festivos, self._lags_ml)
+        temperatura = clima.temperatura_media_prevista(
+            self.hass, self._params.get(CONF_ENTITY_ID_CLIMA) or "", fecha
+        )
+        x = predecir_features(
+            fecha, festivos, self._lags_ml,
+            temperaturas={fecha: temperatura} if temperatura else None,
+        )
         p50s = self._ml.predecir_array(x)
         off10, off90 = self._ml.banda
         return [

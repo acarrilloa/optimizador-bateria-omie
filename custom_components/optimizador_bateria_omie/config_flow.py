@@ -16,6 +16,7 @@ from custom_components.optimizador_bateria_omie.const import (
     CONF_DESVIACION_SOC_REPLAN,
     CONF_DEVICE_ID_SOLARMAN,
     CONF_EFICIENCIA_ROUND_TRIP,
+    CONF_ENTITY_ID_CLIMA,
     CONF_ENTITY_ID_CONSUMO_CASA,
     CONF_ENTITY_ID_CORRIENTE_BATERIA,
     CONF_ENTITY_ID_POTENCIA_BATERIA,
@@ -25,6 +26,7 @@ from custom_components.optimizador_bateria_omie.const import (
     CONF_ENTITY_ID_PRODUCCION_FV,
     CONF_ENTITY_ID_SOC_BATERIA,
     CONF_ENTITY_ID_TEMP_BATERIA,
+    CONF_ENTITY_ID_TEMP_HISTORICO,
     CONF_ENTITY_ID_TEMP_INVERSOR,
     CONF_ENTITY_IDS_FALLO,
     CONF_FESTIVOS_LOCALES,
@@ -208,6 +210,9 @@ CONFIG_SCHEMA = vol.Schema(
             CONF_ENTITY_ID_PREVISION_FV_MANANA,
             default=DEFAULT_ENTITY_ID_PREVISION_FV_MANANA,
         ): str,
+        # --- Clima para el forecaster ML (F5-U5, AEMET; opcional) ---
+        vol.Optional(CONF_ENTITY_ID_CLIMA, default=""): str,
+        vol.Optional(CONF_ENTITY_ID_TEMP_HISTORICO, default=""): str,
         # --- Parámetros de control (F4, §5 del PLAN_F4) ---
         vol.Optional(
             CONF_MODO_ACTIVACION, default=DEFAULT_MODO_ACTIVACION
