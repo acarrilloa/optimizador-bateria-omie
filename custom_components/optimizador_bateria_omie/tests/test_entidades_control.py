@@ -21,9 +21,12 @@ from custom_components.optimizador_bateria_omie.entidades_control import (
 
 
 def _entry(data=None):
-    entry = MagicMock()
-    entry.data = dict(data or {})
-    return entry
+    """:class:`ConfigEntry` fiel a HA 2026.11: ``entry.data`` dict pero
+    SIN atributo ``hass`` (API interna eliminada — INFORME_switch_lp;
+    los MagicMock antiguos lo autocreaban y ocultaban el fallo)."""
+    from types import SimpleNamespace
+
+    return SimpleNamespace(data=dict(data or {}))
 
 
 def _coordinador_plan():
@@ -101,24 +104,27 @@ class TestNumbers:
         assert number.native_value == pytest.approx(0.05)
 
     @pytest.mark.asyncio
-    async def test_set_native_value_escribe_y_recalcula(self):
+    async def test_set_native_value_escribe_y_recalcula(self, hass):
+        """0.12.3: escritura vía async_update_entry con hass por
+        argumento; el entry NO tiene atributo hass (HA 2026.11)."""
         coordinador = _coordinador_plan()
         entry = _entry()
         number = NumberParametroPlanner(
             entry, coordinador, CONF_SOC_MIN, "SOC mínimo", "uid",
             5.0, 50.0, 1.0, DEFAULT_SOC_MIN, "%",
         )
+        number.hass = hass  # como al estar añadida a HA
 
         await number.async_set_native_value(25.0)
 
-        # 0.12.2: escritura vía async_update_entry (entry.data es
-        # inmutable desde HA 2026.x)
-        kwargs = entry.hass.config_entries.async_update_entry.call_args.kwargs
+        kwargs = (
+            hass.config_entries.async_update_entry.call_args.kwargs
+        )
         assert kwargs["data"][CONF_SOC_MIN] == pytest.approx(25.0)
         coordinador.async_recalcular.assert_awaited_once_with("number")
 
     @pytest.mark.asyncio
-    async def test_soc_min_sincroniza_limites_del_inversor(self):
+    async def test_soc_min_sincroniza_limites_del_inversor(self, hass):
         """0.11.6: mover el number de SOC mínimo reescribe 217/218."""
         ejecutor = MagicMock()
         ejecutor.async_actualizar_limites_soc = AsyncMock()
@@ -128,13 +134,14 @@ class TestNumbers:
             entry, coordinador, CONF_SOC_MIN, "SOC mínimo", "uid",
             5.0, 50.0, 1.0, DEFAULT_SOC_MIN, "%", ejecutor=ejecutor,
         )
+        number.hass = hass
 
         await number.async_set_native_value(20.0)
 
         ejecutor.async_actualizar_limites_soc.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_otro_parametro_no_toca_limites(self):
+    async def test_otro_parametro_no_toca_limites(self, hass):
         ejecutor = MagicMock()
         ejecutor.async_actualizar_limites_soc = AsyncMock()
         number = NumberParametroPlanner(
@@ -142,10 +149,69 @@ class TestNumbers:
             "uid", 50.0, 100.0, 1.0, DEFAULT_SOC_MAX, "%",
             ejecutor=ejecutor,
         )
+        number.hass = hass
 
         await number.async_set_native_value(90.0)
 
         ejecutor.async_actualizar_limites_soc.assert_not_awaited()
+
+
+class TestSwitchUsarLP:
+    """0.12.3: regresión del INFORME_switch_lp — ``ConfigEntry`` ya no
+    tiene atributo ``hass`` desde HA 2026.11 y el turn_on fallaba con
+    ``'ConfigEntry' object has no attribute 'hass'``."""
+
+    def test_is_on_por_entry_data(self):
+        from custom_components.optimizador_bateria_omie.const import (
+            ALGORITMO_GREEDY,
+            ALGORITMO_LP,
+            CONF_ALGORITMO_PLANNER,
+        )
+        from custom_components.optimizador_bateria_omie.entidades_control import (
+            SwitchUsarLP,
+        )
+        switch = SwitchUsarLP(
+            _entry({CONF_ALGORITMO_PLANNER: ALGORITMO_LP}),
+            _coordinador_plan(),
+        )
+        assert switch.is_on is True
+
+        switch = SwitchUsarLP(
+            _entry({CONF_ALGORITMO_PLANNER: ALGORITMO_GREEDY}),
+            _coordinador_plan(),
+        )
+        assert switch.is_on is False
+
+    @pytest.mark.asyncio
+    async def test_turn_on_entry_sin_hass(self, hass):
+        """Reproducción mínima del informe: entry sin atributo hass y
+        turn_on → persistencia vía hass por argumento + recálculo."""
+        from custom_components.optimizador_bateria_omie.const import (
+            ALGORITMO_LP,
+            CONF_ALGORITMO_PLANNER,
+        )
+        from custom_components.optimizador_bateria_omie.entidades_control import (
+            SwitchUsarLP,
+        )
+        entry = _entry()  # SIN atributo hass, fiel a HA 2026.11
+        coordinador = _coordinador_plan()
+        switch = SwitchUsarLP(entry, coordinador)
+        switch.hass = hass
+        # El repintado real requiere el runtime completo de HA
+        switch.async_write_ha_state = MagicMock()
+
+        await switch.async_turn_on()
+
+        llamada = hass.config_entries.async_update_entry.call_args
+        entrada_posicional, kwargs = llamada.args[0], llamada.kwargs
+        assert entrada_posicional is entry
+        datos = kwargs["data"]
+        assert (
+            datos[CONF_ALGORITMO_PLANNER] == ALGORITMO_LP
+        )
+        coordinador.async_recalcular.assert_awaited_once_with(
+            "algoritmo_lp"
+        )
 
     def test_rango_precio_max_compra_0_a_1(self):
         """Corrección 7: 0-1 €/kWh (precio efectivo hasta ~0,35)."""

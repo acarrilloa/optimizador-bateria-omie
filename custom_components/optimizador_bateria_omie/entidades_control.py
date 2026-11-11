@@ -11,7 +11,7 @@
 Ninguna entidad escribe en el inversor por sí misma: todo pasa por el
 ``EjecutorControl`` y sus salvaguardas.
 """
-# versión 0.12.2
+# versión 0.12.3
 
 import logging
 from typing import Any
@@ -104,18 +104,22 @@ class SwitchControlActivo(SwitchEntity):
         await self._ejecutor.async_set_control_activo(False)
 
 
-def escribir_parametro_caliente(entry, clave: str, valor: float) -> None:
-    """Escribe un parámetro en ``entry.data`` vía API de HA (0.12.2).
+def escribir_parametro_caliente(hass, entry, clave: str, valor) -> None:
+    """Escribe un parámetro en ``entry.data`` vía API de HA (0.12.3).
 
     HA convirtió ``entry.data`` en un ``MappingProxyType`` inmutable:
     la mutación in-place del hack D16 levanta ``'mappingproxy' object
     does not support item assignment``. La vía oficial es
     ``hass.config_entries.async_update_entry`` con una copia del
     mapping (sin disparar recarga de la integración).
+
+    ``hass`` se recibe por argumento (INFORME_switch_lp): el atributo
+    ``ConfigEntry.hass`` era una API interna eliminada en HA 2026.11
+    — las entidades usan su ``self.hass`` heredado de la plataforma.
     """
     datos = dict(entry.data)
     datos[clave] = valor
-    entry.hass.config_entries.async_update_entry(entry, data=datos)
+    hass.config_entries.async_update_entry(entry, data=datos)
 
 
 class SwitchUsarLP(SwitchEntity):
@@ -151,7 +155,7 @@ class SwitchUsarLP(SwitchEntity):
     async def async_turn_on(self, **kwargs) -> None:
         """Conmuta a LP y recalcula (≤ 1 s esperado con CBC)."""
         escribir_parametro_caliente(
-            self._entry, CONF_ALGORITMO_PLANNER, ALGORITMO_LP
+            self.hass, self._entry, CONF_ALGORITMO_PLANNER, ALGORITMO_LP
         )
         await self._coordinador_plan.async_recalcular("algoritmo_lp")
         self.async_write_ha_state()
@@ -159,7 +163,7 @@ class SwitchUsarLP(SwitchEntity):
     async def async_turn_off(self, **kwargs) -> None:
         """Vuelve al greedy y recalcula."""
         escribir_parametro_caliente(
-            self._entry, CONF_ALGORITMO_PLANNER, ALGORITMO_GREEDY
+            self.hass, self._entry, CONF_ALGORITMO_PLANNER, ALGORITMO_GREEDY
         )
         await self._coordinador_plan.async_recalcular("algoritmo_greedy")
         self.async_write_ha_state()
@@ -226,7 +230,7 @@ class NumberParametroPlanner(NumberEntity):
         quedan sincronizados sin esperar a la reactivación.
         """
         escribir_parametro_caliente(
-            self._entry, self._clave, round(float(valor), 6)
+            self.hass, self._entry, self._clave, round(float(valor), 6)
         )
         _LOGGER.info(
             "Parámetro %s = %s (en caliente); recalculando el plan",
