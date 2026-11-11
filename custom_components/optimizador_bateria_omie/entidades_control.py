@@ -11,7 +11,7 @@
 Ninguna entidad escribe en el inversor por sí misma: todo pasa por el
 ``EjecutorControl`` y sus salvaguardas.
 """
-# versión 0.12.0
+# versión 0.12.2
 
 import logging
 from typing import Any
@@ -104,6 +104,20 @@ class SwitchControlActivo(SwitchEntity):
         await self._ejecutor.async_set_control_activo(False)
 
 
+def escribir_parametro_caliente(entry, clave: str, valor: float) -> None:
+    """Escribe un parámetro en ``entry.data`` vía API de HA (0.12.2).
+
+    HA convirtió ``entry.data`` en un ``MappingProxyType`` inmutable:
+    la mutación in-place del hack D16 levanta ``'mappingproxy' object
+    does not support item assignment``. La vía oficial es
+    ``hass.config_entries.async_update_entry`` con una copia del
+    mapping (sin disparar recarga de la integración).
+    """
+    datos = dict(entry.data)
+    datos[clave] = valor
+    entry.hass.config_entries.async_update_entry(entry, data=datos)
+
+
 class SwitchUsarLP(SwitchEntity):
     """Selección en caliente del planner: LP (ON) o greedy (OFF, D-F5.2).
 
@@ -136,13 +150,17 @@ class SwitchUsarLP(SwitchEntity):
 
     async def async_turn_on(self, **kwargs) -> None:
         """Conmuta a LP y recalcula (≤ 1 s esperado con CBC)."""
-        self._entry.data[CONF_ALGORITMO_PLANNER] = ALGORITMO_LP
+        escribir_parametro_caliente(
+            self._entry, CONF_ALGORITMO_PLANNER, ALGORITMO_LP
+        )
         await self._coordinador_plan.async_recalcular("algoritmo_lp")
         self.async_write_ha_state()
 
     async def async_turn_off(self, **kwargs) -> None:
         """Vuelve al greedy y recalcula."""
-        self._entry.data[CONF_ALGORITMO_PLANNER] = ALGORITMO_GREEDY
+        escribir_parametro_caliente(
+            self._entry, CONF_ALGORITMO_PLANNER, ALGORITMO_GREEDY
+        )
         await self._coordinador_plan.async_recalcular("algoritmo_greedy")
         self.async_write_ha_state()
 
@@ -200,12 +218,16 @@ class NumberParametroPlanner(NumberEntity):
     async def async_set_native_value(self, valor: float) -> None:
         """Escribe en entry.data y recalcula el plan inmediato.
 
-        Con ``soc_min`` y ``control_activo`` ON, además reescribe los
+        La escritura usa ``async_update_entry`` (0.12.2):
+        ``entry.data`` es inmutable desde HA 2026.x. Con ``soc_min`` y
+        ``control_activo`` ON, además reescribe los
         límites 217/218 del inversor (0.11.6): el plan y el registro
         real (visible en la entidad Solarman ``battery_low_soc``)
         quedan sincronizados sin esperar a la reactivación.
         """
-        self._entry.data[self._clave] = round(float(valor), 6)
+        escribir_parametro_caliente(
+            self._entry, self._clave, round(float(valor), 6)
+        )
         _LOGGER.info(
             "Parámetro %s = %s (en caliente); recalculando el plan",
             self._clave,

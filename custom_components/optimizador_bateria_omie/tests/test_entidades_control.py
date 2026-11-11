@@ -111,7 +111,10 @@ class TestNumbers:
 
         await number.async_set_native_value(25.0)
 
-        assert entry.data[CONF_SOC_MIN] == pytest.approx(25.0)
+        # 0.12.2: escritura vía async_update_entry (entry.data es
+        # inmutable desde HA 2026.x)
+        kwargs = entry.hass.config_entries.async_update_entry.call_args.kwargs
+        assert kwargs["data"][CONF_SOC_MIN] == pytest.approx(25.0)
         coordinador.async_recalcular.assert_awaited_once_with("number")
 
     @pytest.mark.asyncio

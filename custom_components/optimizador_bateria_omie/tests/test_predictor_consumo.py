@@ -466,8 +466,10 @@ class TestCapaML:
 
     def _predictor_con_datos(self, hass, tmp_path, dias=30, drift_dia=8.0):
         """Dataset con tendencia diaria (drift): el perfil (mediana de
-        la ventana) queda sistemáticamente por debajo del final de la ventana; el
-        ML con lags sigue la tendencia → caso de adopción realista."""
+        la ventana) queda sistemáticamente desfasada del final de la
+        ventana; el ML con lags sigue la tendencia → caso de adopción
+        realista (el entrenamiento excluye las filas sin lag7, si no
+        la imputación diluye el ajuste — ver ForecasterML.entrenar)."""
         rng = random.Random(7)
         inicio = HOY - timedelta(days=dias - 1)
         muestras = []

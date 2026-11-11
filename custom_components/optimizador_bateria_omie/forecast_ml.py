@@ -15,7 +15,7 @@ periodicidad diaria), ``dia_semana`` (sin/cos), ``es_festivo``,
 entidad) y ``consumo_mismo_tramo_{7,14,21,28}d`` (NaN si el histórico
 no llega).
 """
-# versión 0.12.1
+# versión 0.12.2
 
 import logging
 from dataclasses import dataclass
@@ -279,11 +279,23 @@ class ForecasterML:
     # ─── Entrenamiento / evaluación ───
 
     def entrenar(self, dataset: DatasetML) -> None:
-        """Ajusta el ridge y la banda con el dataset dado."""
+        """Ajusta el ridge y la banda con el dataset dado.
+
+        Las filas cuyo ``consumo_mismo_tramo_7d`` falta (primeros 7
+        días de la ventana) van imputadas y **diluyen el ajuste**
+        hacia pesos basura; se excluyen del entrenamiento cuando
+        quedan suficientes filas válidas (≥ 200).
+        """
         if len(dataset) == 0:
             raise ValueError("Dataset vacío")
         x = np.asarray(dataset.x, dtype=np.float64)
         y = np.asarray(dataset.y, dtype=np.float64)
+
+        columna_lag7 = COLUMNAS.index("consumo_mismo_tramo_7d")
+        filas_con_lag7 = ~np.isnan(x[:, columna_lag7])
+        if filas_con_lag7.sum() >= 200:
+            x = x[filas_con_lag7]
+            y = y[filas_con_lag7]
 
         # Imputación: medias de columna (0 en columnas sin datos)
         medias = np.zeros(x.shape[1])
