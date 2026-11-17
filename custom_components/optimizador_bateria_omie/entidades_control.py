@@ -2,11 +2,12 @@
 
 - ``SwitchControlActivo``: habilitador de escrituras reales (default
   OFF → dry-run forzado).
-- ``NumberParametroPlanner``: los 8 parámetros del plan editables **en
-  caliente**: escriben en ``entry.data`` (mutación in-place, D16) y
-  disparan el recálculo inmediato del plan.
+- ``NumberParametroPlanner``: los 10 parámetros del plan editables **en
+  caliente**: escriben en ``entry.data`` (vía ``async_update_entry``,
+  0.12.3) y disparan el recálculo inmediato del plan.
 - ``SensorEstadoControl``: diagnóstico con los estados
-  ``inactivo`` / ``dry_run`` / ``activo`` / ``fallback_bloqueado``.
+  ``inactivo`` / ``dry_run`` / ``gradual`` / ``sin_telemetria`` /
+  ``activo`` / ``fallback_bloqueado`` (D-F5.3.4).
 
 Ninguna entidad escribe en el inversor por sí misma: todo pasa por el
 ``EjecutorControl`` y sus salvaguardas.
@@ -26,6 +27,7 @@ from custom_components.optimizador_bateria_omie.const import (
     ALGORITMO_GREEDY,
     ALGORITMO_LP,
     CONF_ALGORITMO_PLANNER,
+    CONF_BLOQUE_MINUTOS,
     CONF_EFICIENCIA_ROUND_TRIP,
     CONF_MARGEN_ARBITRAJE,
     CONF_POTENCIA_MAX_CARGA,
@@ -35,6 +37,7 @@ from custom_components.optimizador_bateria_omie.const import (
     CONF_PRECIO_MIN_VENTA,
     CONF_SOC_MAX,
     CONF_SOC_MIN,
+    DEFAULT_BLOQUE_MINUTOS,
     DEFAULT_EFICIENCIA_ROUND_TRIP,
     DEFAULT_MARGEN_ARBITRAJE,
     DEFAULT_POTENCIA_MAX_CARGA,
@@ -45,6 +48,7 @@ from custom_components.optimizador_bateria_omie.const import (
     DEFAULT_SOC_MAX,
     DEFAULT_SOC_MIN,
     DOMAIN,
+    NUMBER_BLOQUE_MINUTOS,
     NUMBER_EFICIENCIA_ROUND_TRIP,
     NUMBER_MARGEN_ARBITRAJE,
     NUMBER_POTENCIA_MAX_CARGA,
@@ -248,7 +252,7 @@ class NumberParametroPlanner(NumberEntity):
 def crear_numbers(entry, coordinador_plan, ejecutor=None) -> list[
     NumberParametroPlanner
 ]:
-    """Las 9 entities number de los parámetros del plan (§5 del PLAN_F4)."""
+    """Las 10 entidades number de los parámetros del plan (F4 + F5.3)."""
     definiciones = [
         (
             CONF_PRECIO_MAX_COMPRA, "Precio máximo de compra",
@@ -294,6 +298,11 @@ def crear_numbers(entry, coordinador_plan, ejecutor=None) -> list[
             CONF_PRECIO_EXCEDENTES, "Factor de precio de excedentes",
             NUMBER_PRECIO_EXCEDENTES, 0.0, 1.0, 0.005,
             DEFAULT_PRECIO_EXCEDENTES, "factor",
+        ),
+        (
+            CONF_BLOQUE_MINUTOS, "Minutos de bloque de compromiso",
+            NUMBER_BLOQUE_MINUTOS, 15.0, 120.0, 15.0,
+            DEFAULT_BLOQUE_MINUTOS, "min",
         ),
     ]
     return [
@@ -355,7 +364,7 @@ class SensorEstadoControl(SensorEntity):
 
     @property
     def native_value(self) -> str | None:
-        """Estado visible: inactivo/dry_run/activo/fallback_bloqueado."""
+        """Estado visible (D-F5.3.4): ver ``_actualizar_estado``."""
         return self._ejecutor.estado
 
     @property

@@ -197,7 +197,7 @@ class TestForceMode:
         )
 
         escritor.escribir.assert_not_called()
-        assert executor.estado == "dry_run"
+        assert executor.estado == "gradual"
 
     def test_reinicio_sin_modo_manual(self, executor):
         """Un executor nuevo (reinicio de HA) arranca sin modo manual."""

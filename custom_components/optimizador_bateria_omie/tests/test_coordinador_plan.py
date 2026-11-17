@@ -168,10 +168,26 @@ class TestReplanificacion:
         plan_antes = coordinador.plan
 
         callback_tramo = tracks.time.call_args_list[0].args[1]
-        callback_tramo(datetime.now())
+        ahora = datetime.now()
+        callback_tramo(ahora.replace(minute=0, second=0, microsecond=0))
         await _drenar(hass)
 
         assert coordinador.plan is not plan_antes
+
+    @pytest.mark.asyncio
+    async def test_cambio_tramo_dentro_de_bloque_no_recalcula(
+        self, coordinador, hass, tracks
+    ):
+        """D-F5.3.1: dentro del bloque de compromiso no se redecide."""
+        await coordinador.async_setup()
+        plan_antes = coordinador.plan
+
+        callback_tramo = tracks.time.call_args_list[0].args[1]
+        ahora = datetime.now()
+        callback_tramo(ahora.replace(minute=15, second=0, microsecond=0))
+        await _drenar(hass)
+
+        assert coordinador.plan is plan_antes
 
     @pytest.mark.asyncio
     async def test_desviacion_soc_replanifica(
@@ -354,3 +370,122 @@ class TestSinManana:
 
         assert coordinador.plan.estado == "sin_telemetria"
         assert coordinador.tramo_actual() is None
+
+
+def _fijar_reloj(minutos_del_dia: int):
+    """Parcha ``datetime`` del módulo: HOY con los minutos indicados.
+
+    Los límites del bloque dependen del reloj pared: con el reloj fijo
+    en un punto DENTRO del bloque (p. ej. 22:30 con bloque 60) las
+    pruebas de compromiso no dependen de la hora real de ejecución.
+    """
+    hoy = datetime.now().astimezone()
+    fija = hoy.replace(
+        hour=minutos_del_dia // 60,
+        minute=minutos_del_dia % 60,
+        second=0,
+        microsecond=0,
+    )
+
+    class _Reloj(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            if tz is None:
+                return fija
+            return fija if tz is UTC or tz is None else fija.astimezone(tz)
+
+    return patch(
+        "custom_components.optimizador_bateria_omie.coordinador_plan"
+        ".datetime",
+        _Reloj,
+    )
+
+
+class TestBloqueCompromiso:
+    """D-F5.3.1: el bloque en curso se congela salvo replan inmediato."""
+
+    @pytest.mark.asyncio
+    async def test_bloque_minutos_default_y_validacion(self, coordinador):
+        assert coordinador.bloque_minutos() == 60  # sin configurar
+
+        coordinador.entry.data = {"bloque_minutos": 30}
+        assert coordinador.bloque_minutos() == 30
+
+        # No múltiplo de 15 / fuera de rango → default
+        for invalido in (7, 45 + 15 + 1, 121, 135, "sesenta"):
+            coordinador.entry.data = {"bloque_minutos": invalido}
+            assert coordinador.bloque_minutos() == 60
+
+    @pytest.mark.asyncio
+    async def test_proximo_limite_bloque(self, coordinador):
+        with _fijar_reloj(22 * 60 + 30):  # 22:30 → próximo límite 23:00
+            limite = coordinador.proximo_limite_bloque()
+            assert (limite.hour, limite.minute) == (23, 0)
+
+    @pytest.mark.asyncio
+    async def test_precios_mid_bloque_congela_bloque_en_curso(
+        self, coordinador
+    ):
+        """Un replan reactivo dentro del bloque exporta los tramos previos."""
+        await coordinador.async_setup()
+        plan_previo = coordinador.plan
+        coordinador.coordinador_telemetria.data.soc = 90.0
+
+        with _fijar_reloj(22 * 60 + 30):  # 22:30: bloque [22:00, 23:00)
+            plan_nuevo = await coordinador.async_recalcular("precios")
+
+        indice = 22 * 4  # 22:00
+        assert plan_nuevo.tramos[indice] is plan_previo.tramos[indice]
+        indice_fin = 23 * 4  # 23:00: fuera del bloque → tramo nuevo
+        assert plan_nuevo.tramos[indice_fin] is not (
+            plan_previo.tramos[indice_fin]
+        )
+        assert any("bloque en curso congelado" in m for m in (
+            plan_nuevo.motivos
+        ))
+
+    @pytest.mark.asyncio
+    async def test_desviacion_soc_replanifica_inmediato(
+        self, coordinador
+    ):
+        """D-F5.3.1: desviación de SOC = motivo inmediato, sin congelar."""
+        await coordinador.async_setup()
+        plan_previo = coordinador.plan
+        coordinador.coordinador_telemetria.data.soc = 90.0
+
+        with _fijar_reloj(22 * 60 + 30):
+            plan_nuevo = await coordinador.async_recalcular("desviacion_soc")
+
+        indice = 22 * 4
+        assert plan_nuevo.tramos[indice] is not (
+            plan_previo.tramos[indice]
+        )
+
+    @pytest.mark.asyncio
+    async def test_replan_en_limite_exacto_no_congela(self, coordinador):
+        """En el límite de bloque (X:00 con bloque 60) manda el plan nuevo."""
+        await coordinador.async_setup()
+        plan_previo = coordinador.plan
+        coordinador.coordinador_telemetria.data.soc = 90.0
+
+        with _fijar_reloj(23 * 60):  # 23:00: límite exacto
+            plan_nuevo = await coordinador.async_recalcular("precios")
+
+        indice = 23 * 4
+        assert plan_nuevo.tramos[indice] is not (
+            plan_previo.tramos[indice]
+        )
+
+    @pytest.mark.asyncio
+    async def test_sin_soc_con_plan_previo_lo_congela(
+        self, coordinador, coordinador_telemetria
+    ):
+        """D-F5.3.3: el gap transitorio de SOC no derriba el plan."""
+        await coordinador.async_setup()
+        plan_previo = coordinador.plan
+        assert plan_previo.tramos  # hay plan real
+
+        coordinador_telemetria.data = None
+        plan_resultado = await coordinador.async_recalcular("tramo")
+
+        assert plan_resultado is plan_previo  # congelado, no derribado

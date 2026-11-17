@@ -329,9 +329,14 @@ class TestEventoSinTelemetria:
         await coordinador._async_update_data()  # sigue OK: sin evento
         hass.bus.async_fire.reset_mock()
 
-        # Caída: SOC unavailable → evento disponible=False
+        # Caída: SOC unavailable → PRIMERA observación no dispara evento
+        # (debounce D-F5.3.3: los gaps transitorios no alertan)
         caido = self._coordinador(hass, "unavailable")
         caido._telemetria_disponible = True
+        await caido._async_update_data()
+        hass.bus.async_fire.assert_not_called()
+
+        # SEGUNDA observación consecutiva caída → evento disponible=False
         await caido._async_update_data()
         hass.bus.async_fire.assert_called_once()
         tipo, datos = hass.bus.async_fire.call_args.args
@@ -345,7 +350,7 @@ class TestEventoSinTelemetria:
         await caido2._async_update_data()
         hass.bus.async_fire.assert_not_called()
 
-        # Recuperación → evento disponible=True
+        # Recuperación → evento disponible=True con la 1ª lectura buena
         hass.bus.async_fire.reset_mock()
         recuperado = self._coordinador(hass, "73.5")
         recuperado._telemetria_disponible = False

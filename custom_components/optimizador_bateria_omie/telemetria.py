@@ -23,6 +23,7 @@ from custom_components.optimizador_bateria_omie.const import (
     CONF_ENTITY_ID_TEMP_INVERSOR,
     CONF_INTERVALO_TELEMETRIA,
     CONF_TELEMETRY_SOURCE,
+    DEBOUNCE_TELEMETRIA,
     DEFAULT_ENTITY_ID_CORRIENTE_BATERIA,
     EVENT_SIN_TELEMETRIA,
     SIGNAL_VALIDACION_CAMBIADA,
@@ -164,6 +165,10 @@ class CoordinadorTelemetria(DataUpdateCoordinator[TelemetriaInversor]):
         # Última disponibilidad conocida (0.11.2): para disparar el
         # evento solo en las transiciones, no en cada ciclo
         self._telemetria_disponible: bool | None = None
+        # Observaciones no disponibles consecutivas (D-F5.3.3): los
+        # gaps transitorios de Solarman (< debounce) no declinan la
+        # caída ni disparan el evento
+        self._no_disponibles_consecutivas = 0
 
     @property
     def cliente(self):
@@ -178,8 +183,19 @@ class CoordinadorTelemetria(DataUpdateCoordinator[TelemetriaInversor]):
         evento lleva ``{"disponible": bool, "motivo": str}`` para que
         automatizaciones de notificación (móvil) alerten de la caída y
         de la recuperación del inversor.
+
+        Debounce (D-F5.3.3): la caída se declara tras 2 observaciones
+        no disponibles consecutivas; la recuperación, con la primera
+        lectura buena. Los gaps transitorios de Solarman no generan
+        eventos falsos.
         """
         disponible = datos is not None and datos.soc is not None
+        if disponible:
+            self._no_disponibles_consecutivas = 0
+        else:
+            self._no_disponibles_consecutivas += 1
+            if self._no_disponibles_consecutivas < DEBOUNCE_TELEMETRIA:
+                return
         # La primera observación no dispara evento: al arrancar HA la
         # telemetría ya puede estar caída y avisar de "disponible"
         # tras cada reinicio sería ruido

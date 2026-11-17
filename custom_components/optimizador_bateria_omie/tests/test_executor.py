@@ -700,31 +700,84 @@ class TestWatchdog:
             mapa,
             escritor,
             _tramo(ACCION_CARGA_RED),
-            telemetria=_telemetria(edad_s=120.0),  # > 2 × 30 s
+            telemetria=_telemetria(edad_s=180.0),  # > 4 × 30 s
+        )
+        executor._control_activo = True
+
+        await executor.async_aplicar_tramo("test")
+        await executor.async_aplicar_tramo("test")
+
+        escritor.escribir.assert_not_called()
+        # Tras el debounce (D-F5.3.3) el estado declara la caída
+        assert executor.estado == "sin_telemetria"
+        detalle = executor.estado_detalle
+        assert detalle["telemetria_fresca"] is False
+        assert detalle["modo_activacion"] == "gradual"
+
+    @pytest.mark.asyncio
+    async def test_telemetria_jitter_menor_que_umbral_escribe(
+        self, hass, mapa, escritor
+    ):
+        """D-F5.3.3: umbral 4 × intervalo absorbe el jitter de Solarman."""
+        executor = _executor(
+            hass,
+            mapa,
+            escritor,
+            _tramo(ACCION_CARGA_RED),
+            telemetria=_telemetria(edad_s=100.0),  # < 120 s (antes 60 s)
         )
         executor._control_activo = True
 
         await executor.async_aplicar_tramo("test")
 
-        escritor.escribir.assert_not_called()
+        assert escritor.escribir.call_count == 3
+        assert executor.estado == "activo"
 
     @pytest.mark.asyncio
     async def test_telemetria_obsoleta_con_carga_activa_fallback(
         self, hass, mapa, escritor
     ):
+        """D-F5.3.3: la carga se mantiene hasta el timeout mayor (600 s)."""
         executor = _executor(hass, mapa, escritor, _tramo(ACCION_CARGA_RED))
         executor._control_activo = True
         # Aplicamos carga desde red...
         await executor.async_aplicar_tramo("test")
         assert escritor._leidos[232] == 1
 
-        # ...y luego la telemetría queda obsoleta
-        executor.coordinador_telemetria.data = _telemetria(edad_s=120.0)
+        # ...y luego la telemetría queda obsoleta (primera caída NO
+        # derriba la carga: escrituras cortadas, plan en espera)
+        executor.coordinador_telemetria.data = _telemetria(edad_s=180.0)
+        await executor.async_aplicar_tramo("test")
+        assert executor.estado != "fallback_bloqueado"
+        assert escritor._leidos[232] == 1  # última escritura sigue en pie
+
+        # Superado el timeout mayor → fallback con valores seguros
+        executor._ts_watchdog_caida = (
+            datetime.now(tz=UTC) - timedelta(seconds=601)
+        )
         await executor.async_aplicar_tramo("test")
 
         assert executor.estado == "fallback_bloqueado"
         assert escritor._leidos[232] == 0  # valores seguros
         assert escritor._leidos[230] == 0
+
+    @pytest.mark.asyncio
+    async def test_watchdog_recuperado_resetea_caidas(
+        self, hass, mapa, escritor
+    ):
+        """D-F5.3.3: la recuperación resetea el contador del watchdog."""
+        executor = _executor(hass, mapa, escritor, _tramo(ACCION_CARGA_RED))
+        executor._control_activo = True
+
+        # Una caída y una recuperación: el estado no llegó a declararse
+        executor.coordinador_telemetria.data = _telemetria(edad_s=180.0)
+        await executor.async_aplicar_tramo("test")
+        executor.coordinador_telemetria.data = _telemetria(edad_s=0.0)
+        await executor.async_aplicar_tramo("test")
+
+        assert executor.estado == "activo"
+        assert executor._watchdog_caidas == 0
+        assert executor._ts_watchdog_caida is None
 
     @pytest.mark.asyncio
     async def test_plan_ausente_con_carga_activa_fallback(
@@ -894,7 +947,7 @@ class TestModoGradual:
         await executor.async_aplicar_tramo("test")
 
         escritor.escribir.assert_not_called()
-        assert executor.estado == "dry_run"
+        assert executor.estado == "gradual"
 
     @pytest.mark.asyncio
     async def test_venta_red_simulada_en_gradual(self, hass, mapa, escritor):
@@ -910,7 +963,7 @@ class TestModoGradual:
         await executor.async_aplicar_tramo("test")
 
         escritor.escribir.assert_not_called()
-        assert executor.estado == "dry_run"
+        assert executor.estado == "gradual"
 
     @pytest.mark.asyncio
     async def test_modo_completo_ejecuta_todo(self, hass, mapa, escritor):

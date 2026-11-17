@@ -80,14 +80,23 @@ class TestSwitchControlActivo:
 
 
 class TestNumbers:
-    def test_crear_numbers_nueve_parametros(self):
+    def test_crear_numbers_diez_parametros(self):
         numbers = crear_numbers(_entry(), _coordinador_plan())
 
-        assert len(numbers) == 9
+        assert len(numbers) == 10  # 9 de F4/F5 + bloque_minutos (F5.3)
         unique_ids = {n.unique_id for n in numbers}
         assert "optimizador_bateria_omie_precio_max_compra" in unique_ids
         assert "optimizador_bateria_omie_eficiencia_round_trip" in unique_ids
         assert "optimizador_bateria_omie_precio_excedentes" in unique_ids
+        assert "optimizador_bateria_omie_bloque_minutos" in unique_ids
+        bloque = next(
+            n for n in numbers
+            if n.unique_id == "optimizador_bateria_omie_bloque_minutos"
+        )
+        assert bloque.native_min_value == 15
+        assert bloque.native_max_value == 120
+        assert bloque.native_step == 15
+        assert bloque.native_value == 60  # DEFAULT_BLOQUE_MINUTOS
 
     def test_native_value_default_y_de_entry(self):
         coordinador = _coordinador_plan()

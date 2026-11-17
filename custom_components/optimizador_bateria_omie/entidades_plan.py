@@ -196,6 +196,12 @@ class SensorPlan(EntidadBasePlan):
             "coste_con_plan_eur": plan.coste_con_plan_eur,
             "plan": [asdict(t) for t in _tramos_pendientes(plan.tramos)],
         }
+        # Bloque de compromiso (D-F5.3.1): tamaño en caliente y hora
+        # del próximo replan periódico
+        atributos["bloque_minutos"] = self._coordinador.bloque_minutos()
+        atributos["proximo_replan"] = (
+            self._coordinador.proximo_limite_bloque().strftime("%H:%M")
+        )
         if tramo is not None:
             atributos["tramo_actual"] = tramo.hora
             atributos["soc_previsto_pct"] = tramo.soc_previsto_pct

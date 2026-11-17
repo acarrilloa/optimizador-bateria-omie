@@ -2,14 +2,16 @@
 
 No es un ``DataUpdateCoordinator`` de polling (D16): recalcula en el
 arranque, al llegar precios nuevos (D+1 ~13:45), al cambiar de tramo
-(cada 15 min), al togglear ``festivo_hoy``, por desviación de SOC y con
-el servicio ``regenerate_plan``. **Nunca escribe en el inversor.**
+(cada 15 min, pero solo se redecide en los límites del bloque de
+compromiso, D-F5.3.1), al togglear ``festivo_hoy``, por desviación de
+SOC y con el servicio ``regenerate_plan``. **Nunca escribe en el
+inversor.**
 """
-# versión 0.12.0
+# versión 0.13.0
 
 import logging
 from collections.abc import Callable
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
@@ -23,10 +25,13 @@ from custom_components.optimizador_bateria_omie.const import (
     ALGORITMO_GREEDY,
     ALGORITMO_LP,
     CONF_ALGORITMO_PLANNER,
+    CONF_BLOQUE_MINUTOS,
     CONF_DESVIACION_SOC_REPLAN,
     CONF_ENTITY_ID_SOC_BATERIA,
+    DEFAULT_BLOQUE_MINUTOS,
     DEFAULT_DESVIACION_SOC_REPLAN,
     DOMAIN,
+    TRAMOS_POR_DIA,
 )
 from custom_components.optimizador_bateria_omie.coordinador import (
     CoordinadorDatosOmie,
@@ -48,6 +53,12 @@ from custom_components.optimizador_bateria_omie.telemetria import (
 _LOGGER = logging.getLogger(__name__)
 
 ENTITY_ID_FESTIVO_HOY = f"switch.{DOMAIN}_festivo_hoy"
+
+# Motivos que replanifican con EFECTO INMEDIATO sobre el bloque en
+# curso (D-F5.3.1): seguridad y ventana de oportunidad ante caída de
+# SOC. Todo lo demás (precios, perfil, festivo, numbers, tramo del
+# límite...) solo cambia el plan desde el siguiente límite de bloque.
+MOTIVOS_REPLAN_INMEDIATO = frozenset({"desviacion_soc"})
 
 
 def _tramo_actual_index(ahora: datetime | None = None) -> int:
@@ -149,7 +160,18 @@ class CoordinadorPlan:
 
     @callback
     def _async_cambio_tramo(self, ahora) -> None:
-        """Cambio de tramo cada 15 min: replanifica con SOC real."""
+        """Cambio de tramo: replanifica solo en límites de bloque.
+
+        El listener sigue disparando cada 15 min, pero dentro del
+        bloque de compromiso (D-F5.3.1) no se redecide: los límites
+        se alinean a medianoche (p. ej. 60 min → cada hora en punto).
+        Las replanificaciones reactivas (desviación de SOC, precios)
+        siguen su curso y congelan el bloque en curso.
+        """
+        actual = ahora if ahora is not None else datetime.now()
+        minutos = actual.hour * 60 + actual.minute
+        if minutos % self.bloque_minutos() != 0:
+            return
         self.hass.async_create_task(self.async_recalcular("tramo"))
 
     @callback
@@ -243,7 +265,39 @@ class CoordinadorPlan:
         ]
 
     async def async_recalcular(self, motivo: str) -> Plan:
-        """Recalcula el plan completo (hoy + mañana si hay precios)."""
+        """Recalcula el plan completo (hoy + mañana si hay precios).
+
+        Sin SOC de telemetría y con un plan vigente (D-F5.3.3) no se
+        derriba el plan: se congela (los gaps transitorios de Solarman
+        no deben vaciar el plan cada vez). Con un plan nuevo en curso,
+        el bloque en curso se exporta del plan previo salvo que el
+        motivo sea inmediato (D-F5.3.1).
+        """
+        soc = None
+        telemetria = self.coordinador_telemetria.data
+        if telemetria is not None:
+            soc = telemetria.soc
+
+        plan_previo = (
+            self._plan if self._plan is not None and self._plan.tramos
+            else None
+        )
+        if soc is None:
+            if plan_previo is not None:
+                _LOGGER.warning(
+                    "Telemetría sin SOC (motivo: %s): el plan vigente "
+                    "se congela (no se derriba, D-F5.3.3)",
+                    motivo,
+                )
+                self._notificar()
+                return plan_previo
+            motivo_congelado = (
+                "telemetría sin SOC: sin plan previo que congelar "
+                "(D-F5.3.3)"
+            )
+        else:
+            motivo_congelado = None
+
         datos = self.coordinador_precio.datos
         hoy = datetime.now().astimezone().date()
         manana = hoy.fromordinal(hoy.toordinal() + 1)
@@ -256,16 +310,23 @@ class CoordinadorPlan:
         if precios_manana is not None:
             prediccion_manana = await self.predictor.predecir(manana)
 
-        soc = None
-        telemetria = self.coordinador_telemetria.data
-        if telemetria is not None:
-            soc = telemetria.soc
-
         # Recalcular los parámetros del planificador en cada recálculo:
         # los number de F4 mutan entry.data en caliente (D16) y deben
         # aplicar en ≤ 60 s sin recrear la entrada.
         self.planificador.p = ParametrosPlanner.desde_entry(self.entry)
         plan = self._planificar_con_motor(hoy, precios_manana, prediccion_hoy, prediccion_manana, soc)
+
+        # Bloque de compromiso (D-F5.3.1): fuera de límite y sin motivo
+        # inmediato, el bloque en curso se exporta del plan previo
+        if (
+            plan_previo is not None
+            and plan.estado == "ok"
+            and motivo not in MOTIVOS_REPLAN_INMEDIATO
+        ):
+            self._exportar_bloque_en_curso(plan, plan_previo, motivo)
+        if motivo_congelado is not None:
+            plan.motivos.append(motivo_congelado)
+
         self._plan = plan
         self._prediccion_hoy = prediccion_hoy
         self._prediccion_manana = prediccion_manana
@@ -284,6 +345,65 @@ class CoordinadorPlan:
         )
         self._notificar()
         return plan
+
+    def bloque_minutos(self) -> int:
+        """Minutos de bloque de compromiso (múltiplo de 15 en 15–120)."""
+        valor = self.entry.data.get(
+            CONF_BLOQUE_MINUTOS, DEFAULT_BLOQUE_MINUTOS
+        )
+        try:
+            bloque = int(valor)
+        except (TypeError, ValueError):
+            return DEFAULT_BLOQUE_MINUTOS
+        if bloque % 15 == 0 and 15 <= bloque <= 120:
+            return bloque
+        return DEFAULT_BLOQUE_MINUTOS
+
+    def proximo_limite_bloque(self, ahora: datetime | None = None) -> datetime:
+        """Instante del próximo límite de bloque (replan periódico)."""
+        actual = ahora or datetime.now().astimezone()
+        minutos = actual.hour * 60 + actual.minute
+        bloque = self.bloque_minutos()
+        restantes = bloque - minutos % bloque
+        return actual + timedelta(minutes=restantes)
+
+    def _exportar_bloque_en_curso(
+        self, plan: Plan, plan_previo: Plan, motivo: str
+    ) -> None:
+        """Copia el bloque en curso del plan previo al plan nuevo.
+
+        Solo aplica si el recálculo ocurre DENTRO del bloque (replan
+        reactivo): en un límite exacto el bloque nuevo manda. Lo que
+        publica el sensor plan es lo que ejecuta el executor.
+        """
+        actual = datetime.now().astimezone()
+        minutos = actual.hour * 60 + actual.minute
+        bloque = self.bloque_minutos()
+        if minutos % bloque == 0:
+            return
+        hoy = actual.date()
+        tramos_bloque = bloque // 15
+        inicio = (minutos // bloque) * tramos_bloque
+        fin = inicio + tramos_bloque
+        previos = {(t.fecha, t.tramo): t for t in plan_previo.tramos}
+        exportados = 0
+        for i, tramo in enumerate(plan.tramos):
+            offset = (tramo.fecha - hoy).days * TRAMOS_POR_DIA + tramo.tramo
+            previo = previos.get((tramo.fecha, tramo.tramo))
+            if inicio <= offset < fin and previo is not None:
+                plan.tramos[i] = previo
+                exportados += 1
+        if exportados:
+            plan.motivos.append(
+                f"bloque en curso congelado: {exportados} tramos del "
+                "plan previo (D-F5.3.1)"
+            )
+            _LOGGER.info(
+                "Bloque en curso congelado: %d tramos del plan previo "
+                "(motivo: %s)",
+                exportados,
+                motivo,
+            )
 
     def _planificar_con_motor(
         self, hoy, precios_manana, prediccion_hoy, prediccion_manana, soc

@@ -15,8 +15,14 @@ SIEMPRE a los límites del YAML; el registro 210 (corriente de carga
 desde cualquier fuente) se fija a la corriente equivalente de
 ``potencia_max_carga`` (valor constante entre tramos, nunca la corriente
 de un tramo) para no estrangular la carga solar.
+
+Watchdog (F5.3, D-F5.3.3): umbral a 4 × ``intervalo_telemetria_s`` y
+``sin_telemetria`` solo tras 2 evaluaciones obsoletas consecutivas (el
+jitter de Solarman ya no derriba el estado); las escrituras se cortan
+desde la PRIMERA observación y el fallback solo llega tras 600 s de
+caída continuada con carga activa.
 """
-# versión 0.11.6
+# versión 0.13.0
 
 import asyncio
 import logging
@@ -43,6 +49,7 @@ from custom_components.optimizador_bateria_omie.const import (
     CONF_SOC_RECUPERACION,
     CONF_VERIFY_TOLERANCIA,
     CONF_VOLTAJE_BATERIA_NOMINAL,
+    DEBOUNCE_TELEMETRIA,
     DEFAULT_DEVICE_ID_SOLARMAN,
     DEFAULT_LATENCIA_VERIFY_S,
     DEFAULT_MAX_ESCRITURAS_HORA,
@@ -56,10 +63,14 @@ from custom_components.optimizador_bateria_omie.const import (
     ESTADO_CONTROL_ACTIVO,
     ESTADO_CONTROL_DRY_RUN,
     ESTADO_CONTROL_FALLBACK_BLOQUEADO,
+    ESTADO_CONTROL_GRADUAL,
     ESTADO_CONTROL_INACTIVO,
+    ESTADO_CONTROL_SIN_TELEMETRIA,
     FALLOS_VERIFY_FALLBACK,
     GUARD_CORTE,
     GUARD_REDUCCION,
+    MULTIPLICADOR_WATCHDOG,
+    TIMEOUT_TELEMETRIA_S,
 )
 from custom_components.optimizador_bateria_omie.const import (
     MODO_ACTIVACION_COMPLETO as COMPLETO,
@@ -303,7 +314,10 @@ class EjecutorControl:
         self._control_activo = False
         self._estado = ESTADO_CONTROL_INACTIVO
         self._motivo_estado = "arranque"
-        self._ultimo_simulado = False
+        self._estado_simulado: str | None = None
+        self._ultimo_watchdog_ok = True
+        self._watchdog_caidas = 0
+        self._ts_watchdog_caida: datetime | None = None
         self._guard_actual: str | None = None
         self._modo_manual: tuple[str, datetime] | None = None
         self._ultimo_aplicado: dict[int, int] = {}
@@ -471,7 +485,14 @@ class EjecutorControl:
         )
 
     def _telemetria_fresca(self) -> bool:
-        """Telemetría no obsoleta: ts < 2 × intervalo (watchdog D7)."""
+        """Telemetría no obsoleta: ts < 4 × intervalo (D7, D-F5.3.3).
+
+        El umbral pasó de 2 × a 4 × ``intervalo_telemetria_s``: el
+        jitter del polling de Solarman superaba el umbral original
+        a diario. La caída se **declara** tras 2 evaluaciones obsoletas
+        consecutivas (debounce), pero este método devuelve ``False``
+        desde la primera: las escrituras se cortan de inmediato.
+        """
         telemetria = self.coordinador_telemetria.data
         if telemetria is None or telemetria.soc is None:
             return False
@@ -481,12 +502,13 @@ class EjecutorControl:
         edad = (
             datetime.now(tz=UTC) - telemetria.ts_actualizacion
         ).total_seconds()
-        if edad > 2 * intervalo:
+        umbral = MULTIPLICADOR_WATCHDOG * intervalo
+        if edad > umbral:
             _LOGGER.warning(
                 "Watchdog: telemetría obsoleta (%.0f s > %.0f s); "
                 "no se escribe",
                 edad,
-                2 * intervalo,
+                umbral,
             )
             return False
         return True
@@ -671,7 +693,7 @@ class EjecutorControl:
                 tramo.accion,
                 objetivos or "sin escrituras",
             )
-            self._ultimo_simulado = bool(objetivos)
+            self._estado_simulado = None
             await self._auditar(
                 tramo, objetivos, ejecutada=False,
                 motivo=f"{motivo}: control_activo OFF",
@@ -679,10 +701,29 @@ class EjecutorControl:
             self._actualizar_estado()
             return
 
-        # Watchdog: telemetría obsoleta o sin SOC → no escribir
-        if not self._telemetria_fresca():
-            if self._carga_activa():
-                await self._async_fallback("telemetría obsoleta")
+        # Watchdog (D7 + D-F5.3.3): las escrituras se cortan desde la
+        # PRIMERA observación obsoleta; el estado ``sin_telemetria``
+        # se declara tras el debounce y el último tramo se mantiene
+        # (carga activa incluida) hasta TIMEOUT_TELEMETRIA_S, momento
+        # en el que el fallback aplica los valores seguros.
+        fresca = self._telemetria_fresca()
+        self._ultimo_watchdog_ok = fresca
+        if fresca:
+            self._watchdog_caidas = 0
+            self._ts_watchdog_caida = None
+        else:
+            self._watchdog_caidas += 1
+            if self._ts_watchdog_caida is None:
+                self._ts_watchdog_caida = datetime.now(tz=UTC)
+            en_timeout = (
+                datetime.now(tz=UTC) - self._ts_watchdog_caida
+            ).total_seconds() >= TIMEOUT_TELEMETRIA_S
+            if self._carga_activa() and en_timeout:
+                await self._async_fallback(
+                    "telemetría obsoleta > "
+                    f"{TIMEOUT_TELEMETRIA_S} s"
+                )
+                return
             self._actualizar_estado()
             return
         # Bloqueo por fallo del inversor (D10)
@@ -700,7 +741,8 @@ class EjecutorControl:
                 tramo.accion,
                 motivo,
             )
-            self._ultimo_simulado = bool(objetivos)
+            # MANTENER no traduce escrituras: no hay nada simulado
+            self._estado_simulado = "gradual" if objetivos else None
             await self._auditar(
                 tramo, objetivos, ejecutada=False,
                 motivo=f"{motivo}: simulada por modo gradual",
@@ -712,7 +754,7 @@ class EjecutorControl:
         objetivos = self._aplicar_guard(objetivos)
         pendientes = self._filtrar_idempotente(objetivos)
         if not pendientes:
-            self._ultimo_simulado = False
+            self._estado_simulado = None
             self._actualizar_estado()
             return
 
@@ -726,7 +768,7 @@ class EjecutorControl:
                 self._escrituras_ultima_hora(),
                 maximo,
             )
-            self._ultimo_simulado = bool(pendientes)
+            self._estado_simulado = "rate_limiter"
             await self._auditar(
                 tramo, pendientes, ejecutada=False,
                 motivo=f"{motivo}: aplazado por rate limiter",
@@ -737,7 +779,7 @@ class EjecutorControl:
         _LOGGER.info(
             "Aplicando %s (%s): %s", tramo.accion, motivo, pendientes
         )
-        self._ultimo_simulado = False
+        self._estado_simulado = None
         for addr, valor in pendientes.items():
             await self._escritor.escribir(addr, valor)
             self._escrituras_ts.append(datetime.now(tz=UTC))
@@ -1032,7 +1074,7 @@ class EjecutorControl:
                     "activación abortada: fallo escribiendo límites "
                     f"SOC (217/218): {err}"
                 )
-                self._ultimo_simulado = False
+                self._estado_simulado = None
                 self._actualizar_estado()
                 raise
             self._control_activo = True
@@ -1090,11 +1132,23 @@ class EjecutorControl:
     # ─── Estado ───
 
     def _actualizar_estado(self) -> None:
-        """Recalcula el estado visible y notifica (D12)."""
+        """Recalcula el estado visible y notifica (D12, D-F5.3.4).
+
+        ``sin_telemetria`` se declara tras el debounce (D-F5.3.3) y
+        ``gradual`` diferencia la simulación del modo gradual del
+        ``dry_run`` real (control OFF ya se reporta como ``inactivo``).
+        """
         if self._estado != ESTADO_CONTROL_FALLBACK_BLOQUEADO:
             if not self._control_activo:
                 self._estado = ESTADO_CONTROL_INACTIVO
-            elif self._ultimo_simulado:
+            elif (
+                not self._ultimo_watchdog_ok
+                and self._watchdog_caidas >= DEBOUNCE_TELEMETRIA
+            ):
+                self._estado = ESTADO_CONTROL_SIN_TELEMETRIA
+            elif self._estado_simulado == "gradual":
+                self._estado = ESTADO_CONTROL_GRADUAL
+            elif self._estado_simulado is not None:
                 self._estado = ESTADO_CONTROL_DRY_RUN
             else:
                 self._estado = ESTADO_CONTROL_ACTIVO
@@ -1116,6 +1170,8 @@ class EjecutorControl:
         return {
             "motivo": self._motivo_estado,
             "control_activo": self._control_activo,
+            "modo_activacion": self._modo_activacion(),
+            "telemetria_fresca": self._ultimo_watchdog_ok,
             "fallos_consecutivos": self._fallos_consecutivos,
             "escrituras_ultima_hora": self._escrituras_ultima_hora(),
             "modo_manual": self.modo_manual,

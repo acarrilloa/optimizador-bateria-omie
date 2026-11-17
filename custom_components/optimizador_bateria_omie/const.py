@@ -156,11 +156,28 @@ GUARD_CORTE = 1.0
 # Fallos de verify consecutivos que disparan el fallback
 FALLOS_VERIFY_FALLBACK = 3
 
-# Estados del sensor diagnóstico de control (F4, D12)
+# Estados del sensor diagnóstico de control (F4, D12; F5.3, D-F5.3.4)
 ESTADO_CONTROL_INACTIVO = "inactivo"
 ESTADO_CONTROL_DRY_RUN = "dry_run"
+ESTADO_CONTROL_GRADUAL = "gradual"
 ESTADO_CONTROL_ACTIVO = "activo"
+ESTADO_CONTROL_SIN_TELEMETRIA = "sin_telemetria"
 ESTADO_CONTROL_FALLBACK_BLOQUEADO = "fallback_bloqueado"
+
+# --- Estabilidad del plan y watchdog (F5.3) ---
+# Bloque de compromiso (D-F5.3.1): el plan periódico solo se redecide
+# en límites de bloque (alineados a medianoche); el bloque en curso se
+# congela salvo replan por seguridad (desviacion_soc).
+CONF_BLOQUE_MINUTOS = "bloque_minutos"
+DEFAULT_BLOQUE_MINUTOS = 60  # 15–120, múltiplos de 15
+NUMBER_BLOQUE_MINUTOS = f"{DOMAIN}_bloque_minutos"
+# Watchdog de telemetría (D-F5.3.3): umbral a 4 × intervalo (el jitter
+# del polling de Solarman supera 2 × intervalo a diario) y se exige
+# más de una observación consecutiva antes de declarar la caída;
+# las escrituras se cortan desde la PRIMERA observación obsoleta.
+MULTIPLICADOR_WATCHDOG = 4
+DEBOUNCE_TELEMETRIA = 2
+TIMEOUT_TELEMETRIA_S = 600  # timeout mayor antes del fallback con carga activa
 
 # --- Tarifa desde entry.data (F4, deuda #5) ---
 # Defaults = valores confirmados de la tarifa 2.0TD (antes hardcodeados en tarifa.py)
