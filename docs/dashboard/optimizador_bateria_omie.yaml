@@ -1,0 +1,211 @@
+# Dashboard Optimizador Batería OMIE (F6-U2)
+# Requiere: custom:apexcharts-card y custom:mini-graph-card (ver README).
+# Prefijo de entidades: inversor_optimizador_bateria_omie
+
+
+views:
+
+  # ══════════════════════════ Vista principal ══════════════════════════
+  - title: Optimizador
+    type: sections
+    sections:
+
+      # ── Estado y badges ──
+      - type: grid
+        cards:
+          - type: entities
+            title: Control
+            entities:
+              - entity: switch.inversor_optimizador_bateria_omie_control_activo
+                name: Control activo
+              - entity: switch.inversor_optimizador_bateria_omie_usar_planificador_lp
+                name: Planificador LP
+              - entity: sensor.inversor_optimizador_bateria_omie_estado_control
+                name: Estado de control
+              - entity: number.inversor_optimizador_bateria_omie_bloque_minutos
+                name: Bloque de compromiso (min)
+
+          - type: markdown
+            content: >
+              ## {{ states('sensor.inversor_optimizador_bateria_omie_plan')
+              }}
+
+              **Tramo {{ state_attr('sensor.inversor_optimizador_bateria_omie_plan',
+              'tramo_actual') }}** · clasificación
+              {{ states('sensor.inversor_optimizador_bateria_omie_clasificacion') }}
+              · próx. replan
+              {{ state_attr('sensor.inversor_optimizador_bateria_omie_plan',
+              'proximo_replan') }}
+
+      # ── Precio efectivo ──
+      - type: grid
+        cards:
+          - type: custom:apexcharts-card
+            header:
+              title: Precio efectivo hoy (€/kWh)
+              show: true
+              show_states: true
+              colorize_states: true
+            graph_span: 24h
+            series:
+              - entity: sensor.inversor_optimizador_bateria_omie_precios_efectivos_hoy
+                name: €/kWh
+                type: line
+                stroke_width: 2
+                data_generator: |
+                  return (attributes.precios_ordenados || []).map(p => {
+                    const [h, m] = p.hora.split(':').map(Number);
+                    const d = new Date();
+                    d.setHours(h, m, 0, 0);
+                    return [d.getTime(), p.precio];
+                  });
+            now:
+              show: true
+
+      # ── Batería ──
+      - type: grid
+        cards:
+          - type: custom:mini-graph-card
+            name: SOC batería
+            entities:
+              - entity: sensor.inversor_optimizador_bateria_omie_soc_bateria
+                name: Real
+                color: '#388E3C'
+              - entity: sensor.inversor_optimizador_bateria_omie_plan
+                attribute: soc_previsto_pct
+                name: Previsto
+                color: '#1976D2'
+            line_color: '#388E3C'
+            line_width: 2
+            hours_to_show: 12
+            points_per_hour: 4
+
+          - type: markdown
+            content: >
+              **Precio actual**:
+              {{ states('sensor.inversor_optimizador_bateria_omie_precio_efectivo') }}
+              €/kWh ·
+              **Ahorro estimado hoy**:
+              {{ states('sensor.inversor_optimizador_bateria_omie_ahorro_estimado_hoy') }}
+              €
+
+      # ── Próximos tramos del plan (pendientes desde ahora) ──
+      - type: grid
+        cards:
+          - type: markdown
+            title: Próximos tramos del plan
+            content: >
+              {% set tramos = state_attr('sensor.inversor_optimizador_bateria_omie_plan',
+              'plan') %} {% if tramos %}
+
+              | Hora | Acción | SOC | Carga red | Venta red |
+
+              |------|--------|-----|-----------|-----------|
+
+              {% for t in tramos[:12] %} | {{ t.hora }} | {{ t.accion }}
+              | {{ '%.0f' % t.soc_previsto_pct }} % | {{
+              '%.0f' % t.potencia_carga_red_w }} W | {{
+              '%.0f' % t.potencia_venta_red_w }} W |
+
+              {% endfor %} {% else %} Sin tramos pendientes. {% endif %}
+
+  # ═══════════════════════════ Vista ahorro ═══════════════════════════
+  - title: Ahorro
+    type: sections
+    sections:
+      - type: grid
+        cards:
+          - type: gauge
+            name: Ahorro real de hoy
+            entity: sensor.inversor_optimizador_bateria_omie_ahorro_efectivo_hoy
+            min: 0
+            max: 10
+            severity:
+              green: 3
+              yellow: 1
+              red: 0
+
+          - type: gauge
+            name: Ahorro estimado hoy
+            entity: sensor.inversor_optimizador_bateria_omie_ahorro_estimado_hoy
+            min: 0
+            max: 10
+            severity:
+              green: 3
+              yellow: 1
+              red: 0
+
+          - type: markdown
+            content: >
+              {{ state_attr('sensor.inversor_optimizador_bateria_omie_ahorro_efectivo_hoy',
+              'nota') }}
+
+      - type: grid
+        cards:
+          - type: custom:mini-graph-card
+            name: Real vs estimado
+            entities:
+              - entity: sensor.inversor_optimizador_bateria_omie_ahorro_efectivo_hoy
+                name: Real
+                color: '#388E3C'
+              - entity: sensor.inversor_optimizador_bateria_omie_ahorro_estimado_hoy
+                name: Estimado
+                color: '#9E9E9E'
+            hours_to_show: 48
+            points_per_hour: 1
+            line_width: 2
+
+  # ═══════════════════════════ Vista calidad ═══════════════════════════
+  - title: Calidad
+    type: sections
+    sections:
+      - type: grid
+        cards:
+          - type: entities
+            title: Forecast de consumo
+            entities:
+              - entity: sensor.inversor_optimizador_bateria_omie_forecast_quality
+                name: MAPE ML (%)
+                secondary_info: last-changed
+          - type: markdown
+            content: >
+              {% set m = state_attr('sensor.inversor_optimizador_bateria_omie_forecast_quality',
+              {}) %}
+
+              | Métrica | Valor |
+
+              |---------|-------|
+
+              | Fuente activa | {{ m.fuente_consumo or 'desconocida' }} |
+
+              | MAPE ML | {{ m.mape_ml }} % |
+
+              | MAPE perfil | {{ m.mape_perfil }} % |
+
+              | Adoptado | {{ m.adoptado }} |
+
+              | n entrenamiento | {{ m.n_entrenamiento }} |
+
+              | Ventana | {{ m.ventana_dias }} días |
+
+      - type: grid
+        cards:
+          - type: custom:apexcharts-card
+            header:
+              title: Predicción de consumo hoy (W)
+              show: true
+            graph_span: 24h
+            series:
+              - entity: sensor.inversor_optimizador_bateria_omie_prediccion_consumo
+                name: p50
+                type: line
+                stroke_width: 2
+                data_generator: |
+                  return (attributes.consumo_hoy || []).map(p => {
+                    const [h, m] = p.hora.split(':').map(Number);
+                    const d = new Date();
+                    d.setHours(h, m, 0, 0);
+                    return [d.getTime(), p.p50];
+                  });
+            now:
+              show: true
