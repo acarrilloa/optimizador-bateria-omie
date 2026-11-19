@@ -79,6 +79,95 @@ async def test_fallback_omie_web(cliente_omie, fixture_html_omie_web):
     assert ranuras[0].fecha_hora_utc == medianoche_local_utc
 
 
+def _html_omie_web(*series: dict) -> str:
+    """HTML SSR de omie.es: JSON con las comillas escapadas y la eñe
+    en unicode, como la página real incrusta Highcharts (construido
+    programáticamente para no duplicar escapes frágiles en el test)."""
+    cuerpo = json.dumps({"path": {}, "series": [dict(s) for s in series]})
+    return cuerpo.replace('"', '\\"')
+
+
+def _serie(precios: list) -> dict:
+    return {
+        "name": "Precio marginal español",
+        "type": "column",
+        "data": precios,
+    }
+
+
+@pytest.fixture
+def fixture_html_omie_web_negativos():
+    """Incidente ×1000 (0.13.1): serie real con precios NEGATIVOS y un
+    array señuelo posterior de otra gráfica (volumen, escala dispar)."""
+    precios = [
+        (-5.83 - i * 0.35) if i % 6 == 0 else (40.0 + i * 0.12)
+        for i in range(96)
+    ]
+    senuelo = {
+        "name": "Volumen comprado",
+        "type": "column",
+        "data": [31164.7 - 17.3 * i for i in range(24)],
+    }
+    return _html_omie_web(_serie(precios), senuelo)
+
+
+@pytest.fixture
+def fixture_html_omie_web_escala():
+    """Serie capturable por el regex pero fuera de escala (media
+    ~31100 €/MWh): el sanity check debe descartar la fuente."""
+    return _html_omie_web(_serie([31164.7 - 17.3 * i for i in range(96)]))
+
+
+def _sesion_con_html(html: str) -> MagicMock:
+    """Session mock de aiohttp que devuelve el HTML indicado."""
+    response = AsyncMock()
+    response.status = 200
+    response.text = AsyncMock(return_value=html)
+    response.__aenter__.return_value = response
+    session = MagicMock()
+    session.get = MagicMock(return_value=response)
+    return session
+
+
+@pytest.mark.asyncio
+async def test_fallback_omie_web_precios_negativos(
+    cliente_omie, fixture_html_omie_web_negativos
+):
+    """0.13.1 (incidente ×1000): con negativos, la serie real se
+    captura y el array señuelo de la gráfica posterior ya no lo es."""
+    cliente_omie.hass.config.components = []
+    session = _sesion_con_html(fixture_html_omie_web_negativos)
+
+    with patch(
+        "homeassistant.helpers.aiohttp_client.async_get_clientsession",
+        return_value=session,
+    ):
+        ranuras = await cliente_omie.obtener_precios_del_dia(hoy_local())
+
+    assert len(ranuras) == 96
+    assert all(r.fuente == "omie_web" for r in ranuras)
+    # Tramo 0 negativo: −5.83 €/MWh = −0.00583 €/kWh (el viejo regex
+    # habría saltado al señuelo: 31.1647 €/kWh tras el /1000)
+    assert ranuras[0].precio_eur_kwh == pytest.approx(-5.83 / 1000.0)
+    assert all(-1.0 <= r.precio_eur_kwh <= 1.0 for r in ranuras)
+
+
+@pytest.mark.asyncio
+async def test_fallback_omie_web_sanity_check_descarta_escala(
+    cliente_omie, fixture_html_omie_web_escala
+):
+    """0.13.1 (incidente ×1000): una serie fuera de escala plausible
+    para el marginal se descarta (ErrorFuenteOmie), sin tocar caché."""
+    cliente_omie.hass.config.components = []
+    session = _sesion_con_html(fixture_html_omie_web_escala)
+
+    with patch(
+        "homeassistant.helpers.aiohttp_client.async_get_clientsession",
+        return_value=session,
+    ), pytest.raises(ErrorFuenteOmie):
+        await cliente_omie.obtener_precios_del_dia(hoy_local())
+
+
 @pytest.mark.asyncio
 async def test_cache_evita_reconsultas(cliente_omie, fixture_precios_omie_96):
     """La segunda petición del mismo día se sirve desde la caché."""

@@ -1,5 +1,5 @@
 """Cliente para obtener precios de OMIE."""
-# versión 0.10.2
+# versión 0.13.1
 
 import json
 import logging
@@ -20,6 +20,11 @@ OMIE_WEB_UA = (
     "+https://github.com/acarrilloa/optimizador-bateria-omie)"
 )
 OMIE_TRAMOS_ESPERADOS = (92, 96, 100)
+# Sanity check del fallback omie_web (0.13.1, incidente ×1000): la
+# media diaria del marginal español queda históricamente en este rango
+# de €/MWh. Fuera de él, la serie capturada no es la de precios y la
+# fuente se descarta (preferible "sin datos" a "datos ×1000").
+OMIE_MEDIA_MWH_RANGO = (-100.0, 400.0)
 
 
 class ConfiguracionOmie:
@@ -152,18 +157,45 @@ class ClienteOmie:
                 "OMIE web: serie de precio español no encontrada "
                 "(posiblemente aún sin publicar)"
             )
+        # Serie anclada al marcador y tolerante a negativos (0.13.1,
+        # incidente ×1000): el regex anterior no admitía precios
+        # negativos y capturaba el siguiente array numérico de otra
+        # gráfica (volumen, escala dispar), que quedaba en caché con
+        # precios ~×1000. ``null`` no se admite (rompería la
+        # correspondencia temporal de las ranuras).
         m = re.search(
-            r'\\?"data\\?"\s*:\s*\[([0-9][0-9.,\s]*)\]',
-            html[idx : idx + 3000],
+            r'\\?"data\\?"\s*:\s*\[((?:-?[0-9]+(?:\.[0-9]+)?|null)\s*'
+            r'(?:,\s*(?:-?[0-9]+(?:\.[0-9]+)?|null)\s*)*)\]',
+            html[idx : idx + 4500],
         )
         if not m:
             raise ErrorFuenteOmie("OMIE web: precios no encontrados en HTML")
-        precios_mwh = [float(v) for v in m.group(1).split(",") if v.strip()]
+        tokens = [t.strip() for t in m.group(1).split(",")]
+        if any(t == "null" for t in tokens):
+            raise ErrorFuenteOmie(
+                "OMIE web: la serie de precios contiene valores nulos"
+            )
+        precios_mwh = [float(t) for t in tokens if t]
         if len(precios_mwh) not in OMIE_TRAMOS_ESPERADOS:
             raise ErrorFuenteOmie(
                 f"OMIE web: {len(precios_mwh)} tramos "
                 f"(esperados {OMIE_TRAMOS_ESPERADOS}); "
                 "posiblemente aún sin publicar"
+            )
+
+        # Sanity check (defensa en profundidad): una serie en otra
+        # escala/unidad (p. ej. volumen de la propia página) no debe
+        # llegar nunca a la caché aunque el regex cambie de blanco.
+        media_mwh = sum(precios_mwh) / len(precios_mwh)
+        if not (
+            OMIE_MEDIA_MWH_RANGO[0]
+            <= media_mwh
+            <= OMIE_MEDIA_MWH_RANGO[1]
+        ):
+            raise ErrorFuenteOmie(
+                f"OMIE web: precio medio {media_mwh:.1f} €/MWh fuera de "
+                f"rango {OMIE_MEDIA_MWH_RANGO}; serie capturada no "
+                "plausible para el marginal español"
             )
 
         # €/MWh → €/kWh; ranuras de 15 min desde las 00:00 hora local
