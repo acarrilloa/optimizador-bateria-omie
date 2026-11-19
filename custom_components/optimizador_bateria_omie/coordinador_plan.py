@@ -11,7 +11,7 @@ inversor.**
 
 import logging
 from collections.abc import Callable
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
@@ -31,6 +31,10 @@ from custom_components.optimizador_bateria_omie.const import (
     DEFAULT_BLOQUE_MINUTOS,
     DEFAULT_DESVIACION_SOC_REPLAN,
     DOMAIN,
+    HORA_AVISO_SIN_PRECIOS_MANANA,
+    NOTIFICACION_ML_ADOPCION,
+    NOTIFICACION_ML_REENTRENAMIENTO,
+    NOTIFICACION_SIN_PRECIOS_MANANA,
     TRAMOS_POR_DIA,
 )
 from custom_components.optimizador_bateria_omie.coordinador import (
@@ -92,6 +96,10 @@ class CoordinadorPlan:
         self._festivo_hoy = False
         self._listeners: list[Callable[[], None]] = []
         self._canceladores: list[Any] = []
+        # F6-U1: estado de los avisos persistentes de datos
+        self._aviso_precios_fecha: date | None = None
+        self._aviso_ml_fecha: date | None = None
+        self._adoptado_previo: bool | None = None
 
     # ─── Registro ───
 
@@ -190,8 +198,19 @@ class CoordinadorPlan:
         # F5: reentrenamiento diario del forecaster ML tras el perfil
         try:
             await self.predictor.async_reentrenar_ml()
+            await self._async_aviso_ml()
         except Exception as err:  # noqa: BLE001
             _LOGGER.warning("Reentrenamiento ML falló: %s", err)
+            hoy = datetime.now().astimezone().date()
+            if self._aviso_ml_fecha != hoy:
+                self._aviso_ml_fecha = hoy
+                await self._async_notificar(
+                    "Optimizador Batería OMIE: reentrenamiento ML falló",
+                    f"El reentrenamiento diario del forecaster falló: {err}. "
+                    "La predicción sigue con el perfil F3 (guardrail). "
+                    "Detalles en el log de HA.",
+                    NOTIFICACION_ML_REENTRENAMIENTO,
+                )
         await self.async_recalcular(motivo)
 
     @callback
@@ -264,6 +283,102 @@ class CoordinadorPlan:
             for r in ranuras
         ]
 
+    async def _async_notificar(
+        self, titulo: str, mensaje: str, notification_id: str
+    ) -> None:
+        """Notificación persistente tolerante a fallos (F6-U1)."""
+        try:
+            await self.hass.services.async_call(
+                "persistent_notification",
+                "create",
+                {
+                    "title": titulo,
+                    "message": mensaje,
+                    "notification_id": notification_id,
+                },
+                blocking=True,
+            )
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning(
+                "No se pudo emitir la notificación %s: %s",
+                notification_id,
+                err,
+            )
+    async def _async_aviso_sin_precios_manana(
+        self, precios_manana: list | None, hoy: date
+    ) -> None:
+        """Avisa una vez al día si falta D+1 pasadas las 16:00 (F6-U1).
+
+        La publicación de OMIE llega ~13:45 hora local; sin ella el
+        plan nocturno queda cojo (horizonte limitado a hoy). Al llegar
+        los precios, la notificación se retira.
+        """
+        if precios_manana:
+            if self._aviso_precios_fecha == hoy:
+                try:
+                    await self.hass.services.async_call(
+                        "persistent_notification",
+                        "dismiss",
+                        {
+                            "notification_id": (
+                                NOTIFICACION_SIN_PRECIOS_MANANA
+                            )
+                        },
+                        blocking=True,
+                    )
+                except Exception as err:  # noqa: BLE001
+                    _LOGGER.debug("Aviso D+1 ya retirado: %s", err)
+                self._aviso_precios_fecha = None
+            return
+        ahora = datetime.now().astimezone()
+        if (
+            ahora.hour >= HORA_AVISO_SIN_PRECIOS_MANANA
+            and self._aviso_precios_fecha != hoy
+        ):
+            self._aviso_precios_fecha = hoy
+            _LOGGER.warning(
+                "Sin precios de mañana pasadas las %02d:00; el plan "
+                "nocturno quedará limitado a hoy",
+                HORA_AVISO_SIN_PRECIOS_MANANA,
+            )
+            await self._async_notificar(
+                "Optimizador Batería OMIE: sin precios de mañana",
+                "A las "
+                f"{ahora.strftime('%H:%M')} aún no hay precios de mañana "
+                "en ninguna fuente. El plan nocturno quedará limitado a "
+                "hoy (horizonte incompleto). Revisa "
+                "sensor.inversor_optimizador_bateria_omie_estado_control "
+                "y la integración OMIE; probando acción de nuevo en el "
+                "próximo ciclo de 15 min.",
+                NOTIFICACION_SIN_PRECIOS_MANANA,
+            )
+
+    async def _async_aviso_ml(self) -> None:
+        """Avisa de flips de adopción ML↔perfil y fallos de
+        entrenamiento (F6-U1). El flip se notifica siempre que cambia
+        respecto al reentrenamiento anterior de la sesión.
+        """
+        adoptado = self.predictor.metricas_ml.get("adoptado")
+        if (
+            adoptado != self._adoptado_previo
+            and self._adoptado_previo is not None
+        ):
+            _LOGGER.info(
+                "Forecast de consumo: fuente %s",
+                "ML" if adoptado else "perfil",
+            )
+            await self._async_notificar(
+                "Optimizador Batería OMIE: cambio de fuente de forecast",
+                "El reentrenamiento diario cambió la fuente de predicción "
+                "a "
+                + ("ML (ridge)" if adoptado else "el perfil F3")
+                + ". Detalles en "
+                "sensor.inversor_optimizador_bateria_omie_"
+                "forecast_quality.",
+                NOTIFICACION_ML_ADOPCION,
+            )
+        self._adoptado_previo = adoptado
+
     async def async_recalcular(self, motivo: str) -> Plan:
         """Recalcula el plan completo (hoy + mañana si hay precios).
 
@@ -306,6 +421,7 @@ class CoordinadorPlan:
             hoy, festivo_hoy=self._festivo_hoy
         )
         precios_manana = self._precios_efectivos(datos.precios_manana,)
+        await self._async_aviso_sin_precios_manana(precios_manana, hoy)
         prediccion_manana = None
         if precios_manana is not None:
             prediccion_manana = await self.predictor.predecir(manana)

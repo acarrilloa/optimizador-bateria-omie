@@ -43,6 +43,8 @@ def hass():
         return asyncio.get_running_loop().create_task(coro)
 
     h.async_create_task = MagicMock(side_effect=_ejecutar)
+    # F6-U1: los avisos persistentes se llaman en varios recálculos
+    h.services.async_call = AsyncMock()
     return h
 
 
@@ -489,3 +491,109 @@ class TestBloqueCompromiso:
         plan_resultado = await coordinador.async_recalcular("tramo")
 
         assert plan_resultado is plan_previo  # congelado, no derribado
+
+
+class TestAvisosDatos:
+    """F6-U1: avisos persistentes de datos (D+1 y forecast ML)."""
+
+    def _creaciones(self, hass):
+        """Llamadas async_call a persistent_notification.create."""
+        return [
+            c
+            for c in hass.services.async_call.call_args_list
+            if c.args[:2] == ("persistent_notification", "create")
+        ]
+
+    @pytest.mark.asyncio
+    async def test_aviso_sin_precios_manana_pasadas_las_1600(
+        self, coordinador, hass, coordinador_precio
+    ):
+        assert coordinador_precio.datos.precios_manana is None
+
+        with _fijar_reloj(16 * 60 + 30):
+            await coordinador.async_recalcular("tramo")
+            await coordinador.async_recalcular("tramo")
+
+        # Se avisa UNA sola vez al día (idempotente)
+        creaciones = self._creaciones(hass)
+        assert len(creaciones) == 1
+        assert creaciones[0].args[2]["notification_id"] == (
+            "optimizador_bateria_omie_sin_precios_manana"
+        )
+
+    @pytest.mark.asyncio
+    async def test_sin_aviso_antes_de_las_1600(
+        self, coordinador, hass, coordinador_precio
+    ):
+        with _fijar_reloj(14 * 60):
+            await coordinador.async_recalcular("tramo")
+
+        assert self._creaciones(hass) == []
+
+    @pytest.mark.asyncio
+    async def test_llegada_de_precios_retira_el_aviso(
+        self, coordinador, hass, coordinador_precio
+    ):
+        with _fijar_reloj(16 * 60 + 30):
+            await coordinador.async_recalcular("tramo")
+        assert len(self._creaciones(hass)) == 1
+
+        # Llegan los precios de mañana → dismiss del aviso
+        coordinador_precio.datos.precios_manana = [
+            MagicMock(
+                precio_eur_kwh=0.12,
+                fecha_hora_utc=datetime.now(tz=UTC)
+                + timedelta(days=1, minutes=15 * i),
+            )
+            for i in range(96)
+        ]
+        await coordinador.async_recalcular("tramo")
+        despidos = [
+            c
+            for c in hass.services.async_call.call_args_list
+            if c.args[:2] == ("persistent_notification", "dismiss")
+        ]
+        assert len(despidos) == 1
+        assert despidos[0].args[2]["notification_id"] == (
+            "optimizador_bateria_omie_sin_precios_manana"
+        )
+
+    @pytest.mark.asyncio
+    async def test_flip_de_adopcion_ml_notifica(
+        self, coordinador, hass, predictor
+    ):
+        coordinador._adoptado_previo = True
+        predictor.metricas_ml = {"adoptado": True}
+        await coordinador._async_aviso_ml()
+        assert self._creaciones(hass) == []
+
+        predictor.metricas_ml = {"adoptado": False}
+        await coordinador._async_aviso_ml()
+        creaciones = [
+            c
+            for c in self._creaciones(hass)
+            if c.args[2]["notification_id"]
+            == "optimizador_bateria_omie_ml_adopcion"
+        ]
+        assert len(creaciones) == 1
+        assert "fuente de forecast" in creaciones[0].args[2]["title"]
+
+    @pytest.mark.asyncio
+    async def test_reentrenamiento_fallido_notifica_una_vez(
+        self, coordinador, hass, predictor
+    ):
+        predictor.async_reentrenar_ml = AsyncMock(
+            side_effect=RuntimeError("boom")
+        )
+
+        await coordinador._async_perfil_y_recalcular("perfil_diario")
+        await coordinador._async_perfil_y_recalcular("perfil_diario")
+
+        creaciones = [
+            c
+            for c in self._creaciones(hass)
+            if c.args[2]["notification_id"]
+            == "optimizador_bateria_omie_ml_reentrenamiento"
+        ]
+        assert len(creaciones) == 1
+        assert "boom" in creaciones[0].args[2]["message"]

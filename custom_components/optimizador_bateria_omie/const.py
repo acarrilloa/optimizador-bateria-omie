@@ -118,6 +118,7 @@ SERVICE_PROBE_REGISTERS = "probe_registers"
 SERVICE_REGENERATE_PLAN = "regenerate_plan"
 SERVICE_FORCE_MODE = "force_mode"
 SERVICE_RELEASE_MANUAL = "release_manual"
+SERVICE_RESUMEN_DIARIO = "resumen_diario"  # F6-U3
 
 # Acciones válidas del modo manual (F4, D13)
 ACCIONES_MANUALES = (
@@ -178,6 +179,13 @@ NUMBER_BLOQUE_MINUTOS = f"{DOMAIN}_bloque_minutos"
 MULTIPLICADOR_WATCHDOG = 4
 DEBOUNCE_TELEMETRIA = 2
 TIMEOUT_TELEMETRIA_S = 600  # timeout mayor antes del fallback con carga activa
+
+# Avisos persistentes de datos (F6-U1): a partir de esta hora local se
+# avisa si aún no hay precios de mañana (publicación D+1 ~13:45).
+HORA_AVISO_SIN_PRECIOS_MANANA = 16
+NOTIFICACION_SIN_PRECIOS_MANANA = f"{DOMAIN}_sin_precios_manana"
+NOTIFICACION_ML_ADOPCION = f"{DOMAIN}_ml_adopcion"
+NOTIFICACION_ML_REENTRENAMIENTO = f"{DOMAIN}_ml_reentrenamiento"
 
 # --- Tarifa desde entry.data (F4, deuda #5) ---
 # Defaults = valores confirmados de la tarifa 2.0TD (antes hardcodeados en tarifa.py)
