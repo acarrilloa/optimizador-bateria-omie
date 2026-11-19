@@ -1,6 +1,6 @@
-# PLAN F6 — Pulido: fiabilidad de precios, dashboard, notificaciones e informes (0.14.0)
+# PLAN F6 — Pulido: fiabilidad de precios, dashboard, notificaciones e informes (0.14.x)
 
-**Fecha:** 2026-11-20 · **Estado:** ⏳ pendiente de confirmación del usuario
+**Fecha:** 2026-11-20 · **Estado:** ✅ IMPLEMENTADA (entregada como 0.13.1 + 0.14.0/0.14.1)
 **Fuente:** `SPEC.md` §8 (F6: dashboard, notificaciones, informes; criterio de salida: 30 días sin intervención) e `incidente_precios_x1000_optimizador_omie.md`.
 
 ## U0 — Hotfix incidente precios ×1000 (primera entrega, 0.13.1)
@@ -88,8 +88,12 @@ dependencias del usuario, no del componente).
 | Paso | Versión | Contenido |
 |---|---|---|
 | 1 (hotfix) | 0.13.1 | ✅ **ENTREGADO**: U0 fix regex + sanity check + tests (2026-11-20) |
-| 2 | 0.14.0 | U1 + U2 (documentos YAML) |
-| 3 | 0.14.1 | U3 informe diario + persistencia |
+| 2 | 0.14.0 | ✅ **ENTREGADO**: U1 avisos persistentes + U2 dashboard YAML (2026-11-20) |
+| 3 | 0.14.1 | ✅ **ENTREGADO**: U3 servicio `resumen_diario` (2026-11-20) |
+
+Nota: U1+U2+U3 se desarrollaron en la misma sesión; la numeración de
+commits sigue los pasos (0.14.0/0.14.1) y el manifest final queda en
+**0.14.1**, que es la versión a instalar.
 
 ## Criterios de salida de F6
 
