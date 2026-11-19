@@ -67,3 +67,11 @@ release_manual:
   name: "Liberar modo manual"
   description: >-
     Libera inmediatamente el modo manual y vuelve al plan.
+resumen_diario:
+  name: "Resumen diario"
+  description: >-
+    Devuelve el resumen del día para automatizaciones de informe:
+    ahorro estimado vs efectivo, tramos del plan por acción, escrituras
+    reales de la auditoría y estado de control. Diseñado para enviarse
+    como notificación al móvil con una automatización que llame al
+    servicio y use la respuesta.

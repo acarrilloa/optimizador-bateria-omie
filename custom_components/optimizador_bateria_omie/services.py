@@ -1,8 +1,10 @@
-"""Servicios de la integración (F2: probe; F3: regenerate_plan; F4: force/release)."""
-# versión 0.10.0
+"""Servicios de la integración (F2: probe; F3: regenerate_plan; F4: force/release; F6: resumen_diario)."""
+# versión 0.14.1
 
+import json
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
+from pathlib import Path
 from typing import Any
 
 import voluptuous as vol
@@ -28,6 +30,7 @@ from custom_components.optimizador_bateria_omie.const import (
     SERVICE_PROBE_REGISTERS,
     SERVICE_REGENERATE_PLAN,
     SERVICE_RELEASE_MANUAL,
+    SERVICE_RESUMEN_DIARIO,
     TOLERANCIA_PROBE_PCT,
 )
 from custom_components.optimizador_bateria_omie.mapa_registros import (
@@ -322,6 +325,23 @@ def async_setup_services(hass: HomeAssistant) -> None:
         "Servicio %s.%s registrado", DOMAIN, SERVICE_RELEASE_MANUAL
     )
 
+    if hass.services.has_service(DOMAIN, SERVICE_RESUMEN_DIARIO):
+        return
+
+    async def manejar_resumen_diario(llamada: ServiceCall) -> ServiceResponse:
+        """Resumen del día (F6-U3) para automatizaciones de informe."""
+        entry = hass.config_entries.async_entries(DOMAIN)[0]
+        return await ejecutar_resumen_diario(hass, entry)
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_RESUMEN_DIARIO,
+        manejar_resumen_diario,
+        schema=vol.Schema({}),
+        supports_response=SupportsResponse.ONLY,
+    )
+    _LOGGER.info("Servicio %s.%s registrado", DOMAIN, SERVICE_RESUMEN_DIARIO)
+
 
 async def ejecutar_regenerate_plan(hass, entry: ConfigEntry) -> dict:
     """Núcleo de regenerate_plan (D19, testeable sin registrar el servicio).
@@ -337,6 +357,106 @@ async def ejecutar_regenerate_plan(hass, entry: ConfigEntry) -> dict:
             "debe estar cargada con F3 activo"
         )
     return await coordinador_plan.async_regenerar()
+
+
+async def ejecutar_resumen_diario(hass, entry: ConfigEntry) -> dict:
+    """Núcleo de resumen_diario (F6-U3, testeable sin registrar el servicio).
+
+    Devuelve el balance del día: ahorro estimado vs efectivo, tramos del
+    plan por acción, escrituras reales de la auditoría (JSONL) y estado
+    de control. Pensado para una automatización que lo envíe como
+    notificación al móvil a la hora que elija el usuario.
+    """
+    datos_dominio = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+    coordinador_plan = datos_dominio.get("coordinador_plan")
+    auditoria = datos_dominio.get("auditoria")
+    ejecutor = datos_dominio.get("executor")
+    if (
+        coordinador_plan is None
+        or auditoria is None
+        or ejecutor is None
+    ):
+        raise ServiceValidationError(
+            "La integración no está completamente cargada: resumen "
+            "diario requiere plan, auditoría y executor activos"
+        )
+
+    hoy = datetime.now().astimezone().date()
+    plan = coordinador_plan.plan
+    tramos_hoy = (
+        [t for t in plan.tramos if t.fecha == hoy]
+        if plan is not None and plan.tramos
+        else []
+    )
+    conteo: dict[str, int] = {}
+    for tramo in tramos_hoy:
+        conteo[tramo.accion] = conteo.get(tramo.accion, 0) + 1
+
+    ruta_auditoria = (
+        Path(hass.config.config_dir)
+        / DOMAIN
+        / "auditoria_escrituras.jsonl"
+    )
+    escrituras = await hass.async_add_executor_job(
+        _contar_escrituras_del_dia, ruta_auditoria, hoy
+    )
+
+    telemetria = datos_dominio.get("coordinador_telemetria")
+    soc = (
+        telemetria.data.soc
+        if telemetria is not None and telemetria.data is not None
+        else None
+    )
+
+    return {
+        "fecha": hoy.isoformat(),
+        "soc_pct": soc,
+        "ahorro_estimado_eur": coordinador_plan.ahorro_estimado_hoy(),
+        "ahorro_efectivo_eur": auditoria.ahorro_real_hoy,
+        "desglose_auditoria": auditoria.desglose,
+        "tramos_hoy": conteo,
+        "escrituras_reales_hoy": escrituras["total"],
+        "escrituras_por_accion": escrituras["por_accion"],
+        "control_activo": ejecutor.control_activo,
+        "estado_control": ejecutor.estado,
+        "modo_activacion": ejecutor.estado_detalle.get("modo_activacion"),
+        "ruta_auditoria": str(ruta_auditoria),
+    }
+
+
+def _contar_escrituras_del_dia(ruta: Path, dia: date) -> dict:
+    """Escrituras REALES del día local desde el JSONL de auditoría.
+
+    La auditoría es append-only y guarda ``ts`` en UTC: la comparación
+    de día se hace en hora local. Líneas corruptas se saltan sin romper
+    el resumen.
+    """
+    total = 0
+    por_accion: dict[str, int] = {}
+    if not ruta.exists():
+        return {"total": total, "por_accion": por_accion}
+    try:
+        with open(ruta, "r", encoding="utf-8") as fichero:
+            for linea in fichero:
+                try:
+                    registro = json.loads(linea)
+                except json.JSONDecodeError:
+                    continue
+                if not registro.get("ejecutada"):
+                    continue
+                ts = registro.get("ts")
+                try:
+                    local = datetime.fromisoformat(ts).astimezone()
+                except (TypeError, ValueError):
+                    continue
+                if local.date() != dia:
+                    continue
+                total += 1
+                accion = str(registro.get("accion") or "?")
+                por_accion[accion] = por_accion.get(accion, 0) + 1
+    except OSError as err:
+        _LOGGER.warning("Resumen diario: auditoría ilegible: %s", err)
+    return {"total": total, "por_accion": por_accion}
 
 
 SCHEMA_FORCE_MODE = vol.Schema(
