@@ -186,18 +186,35 @@ class TestSchemaF4:
             CONFIG_SCHEMA({**ENTRADA_F2, "modo_activacion": "rapido"})
 
     def test_validacion_218_mayor_217(self):
-        """Corrección 2: soc_recuperacion > soc_min o vol.Invalid."""
+        """Corrección 2 → clamp (0.14.2): recuperación = máx(mínimo+1).
+
+        El raise de ``vol.Invalid`` fuera de voluptuous abortaba el
+        reconfigure con "Unknown error occurred" cuando el soc_min
+        caliente había alcanzado al soc_recuperacion (caso real
+        2026-11-20: min 20 / recuperación 20 tras mover el number).
+        """
         from custom_components.optimizador_bateria_omie.config_flow import (
             validar_soc_recuperacion,
         )
 
+        # Caso del incidente: 20/20 → clampa a 21
         datos = CONFIG_SCHEMA(
-            {**ENTRADA_F2, "soc_min": 15, "soc_recuperacion": 10}
+            {**ENTRADA_F2, "soc_min": 20, "soc_recuperacion": 20}
         )
-        with pytest.raises(vol.Invalid, match="recuperación > corte"):
-            validar_soc_recuperacion(datos)
+        corregidos = validar_soc_recuperacion(datos)
+        assert corregidos["soc_recuperacion"] == 21
 
-        datos["soc_recuperacion"] = 16
+        # Recuperación por debajo del mínimo → mínimo + 1
+        datos = CONFIG_SCHEMA(
+            {**ENTRADA_F2, "soc_min": 30, "soc_recuperacion": 10}
+        )
+        corregidos = validar_soc_recuperacion(datos)
+        assert corregidos["soc_recuperacion"] == 31
+
+        # Valores sanos no se tocan
+        datos = CONFIG_SCHEMA(
+            {**ENTRADA_F2, "soc_min": 15, "soc_recuperacion": 16}
+        )
         assert validar_soc_recuperacion(datos) == datos
 
 
@@ -213,6 +230,33 @@ class TestReconfigureF4:
         _, kwargs = flow.async_update_reload_and_abort.call_args
         guardados = kwargs["data_updates"]
         assert guardados["entity_ids_fallo"] == ["sensor.f1", "sensor.f2"]
+
+    @pytest.mark.asyncio
+    async def test_reconfigure_con_soc_igual_clampa_y_guarda(self):
+        """Incidente 2026-11-20: soc 20/20 + cambio de modo_activacion.
+
+        Antes de 0.14.2 el flujo explotaba ("Unknown error occurred") y
+        NINGÚN cambio del formulario se guardaba. Ahora clampa la
+        recuperación a 21 y el modo sí llega a entry.data.
+        """
+        flow = _flow_con_entry(
+            {**ENTRADA_F2, "soc_min": 20, "soc_recuperacion": 20}
+        )
+
+        await flow.async_step_reconfigure(
+            {
+                **ENTRADA_F2,
+                "soc_min": 20,
+                "soc_recuperacion": 20,
+                "modo_activacion": "completo",
+            }
+        )
+
+        flow.async_update_reload_and_abort.assert_called_once()
+        _, kwargs = flow.async_update_reload_and_abort.call_args
+        guardados = kwargs["data_updates"]
+        assert guardados["soc_recuperacion"] == 21
+        assert guardados["modo_activacion"] == "completo"
 
     @pytest.mark.asyncio
     async def test_form_formatea_entity_ids_fallo(self):

@@ -273,16 +273,23 @@ CONFIG_SCHEMA = vol.Schema(
 
 
 def validar_soc_recuperacion(datos: dict[str, Any]) -> dict[str, Any]:
-    """218 > 217 siempre: soc_recuperacion > soc_min (semántica Deye)."""
+    """218 > 217 siempre: soc_recuperacion > soc_min (semántica Deye).
+
+    **Clampa en vez de fallar** (0.14.2): si el ``number`` de SOC
+    mínimo se movió en caliente hasta o por encima del SOC de
+    recuperación, el reconfigure recibía ``soc_rec <= soc_min`` y la
+    ``vol.Invalid`` lanzada fuera del contexto de voluptuous abortaba
+    el flujo con "Unknown error occurred" — y ningún cambio del
+    formulario (p. ej. ``modo_activacion``) se guardaba. Se aplica la
+    misma semántica de clamp que el executor al escribir 217/218:
+    ``recuperación = max(recuperación, mínimo + 1)``.
+    """
     soc_min = float(datos.get(CONF_SOC_MIN, DEFAULT_SOC_MIN))
     soc_rec = float(
         datos.get(CONF_SOC_RECUPERACION, DEFAULT_SOC_RECUPERACION)
     )
     if soc_rec <= soc_min:
-        raise vol.Invalid(
-            f"soc_recuperacion ({soc_rec}) debe ser mayor que "
-            f"soc_min ({soc_min}): recuperación > corte"
-        )
+        datos[CONF_SOC_RECUPERACION] = round(soc_min + 1, 1)
     return datos
 
 
