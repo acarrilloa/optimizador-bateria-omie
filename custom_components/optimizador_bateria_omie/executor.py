@@ -110,7 +110,7 @@ _LOGGER = logging.getLogger(__name__)
 # LECTURA: campos ``address`` + ``count`` en ambas generaciones. El
 # esquema ``register`` + ``quantity`` pasa la validación del servicio
 # pero la llamada no retorna nunca (cuelga sin excepción; incidente
-# 20-nov-2026, ver custom_components/docs/nota_parche_verify_livelock.md).
+# 20-nov-2026, ver docs/nota_parche_verify_livelock.md).
 DOMINIO_SOLARMAN = "solarman"
 SERVICIO_ESCRIBIR_BLOQUE_ACTUAL = "write_multiple_holding_registers"
 SERVICIO_ESCRIBIR_BLOQUE_LEGADO = "write_multiple_registers"
@@ -281,7 +281,7 @@ class EscritorSolarman:
         el esquema que responde. El par ``register`` + ``quantity``
         pasa la validación del servicio pero la llamada no retorna
         nunca (cuelga sin excepción; incidente 20-nov-2026, ver
-        custom_components/docs/nota_parche_verify_livelock.md).
+        docs/nota_parche_verify_livelock.md).
         """
         servicio = self._servicio(
             "leer", SERVICIO_LEER_ACTUAL, SERVICIO_LEER_LEGADO
