@@ -105,6 +105,12 @@ _LOGGER = logging.getLogger(__name__)
 # read_holding_registers (campo ``quantity``). Se detecta en caliente.
 # Las escrituras individuales (FC 6, write_holding_register) NO se
 # usan: el datalogger Deye las rechaza con ACKNOWLEDGE (0.11.5).
+# ESCRITURA: campos ``register`` + ``values`` (verificado con
+# escrituras reales aterrizadas; funciona en ambas generaciones).
+# LECTURA: campos ``address`` + ``count`` en ambas generaciones. El
+# esquema ``register`` + ``quantity`` pasa la validación del servicio
+# pero la llamada no retorna nunca (cuelga sin excepción; incidente
+# 20-nov-2026, ver docs/nota_parche_verify_livelock.md).
 DOMINIO_SOLARMAN = "solarman"
 SERVICIO_ESCRIBIR_BLOQUE_ACTUAL = "write_multiple_holding_registers"
 SERVICIO_ESCRIBIR_BLOQUE_LEGADO = "write_multiple_registers"
@@ -112,10 +118,12 @@ SERVICIO_LEER_ACTUAL = "read_multiple_holding_registers"
 SERVICIO_LEER_LEGADO = "read_holding_registers"
 CAMPO_DEVICE = "device"
 CAMPO_REGISTRO = "register"
-
+CAMPO_DIRECCION = "address"
 CAMPO_VALORES = "values"
 CAMPO_CANTIDAD = "count"
-CAMPO_CANTIDAD_LEGADO = "quantity"
+# Blindaje de cuelgues del servicio (incidente 20-nov-2026): toda
+# llamada a Solarman se envuelve en asyncio.wait_for con este margen.
+SERVICIO_TIMEOUT_S = 15.0
 
 
 class ErrorEscrituraSolarman(Exception):
@@ -196,22 +204,41 @@ class EscritorSolarman:
         datos: dict[str, Any],
         con_respuesta: bool = False,
     ) -> Any:
-        """Invoca un servicio de Solarman con el dispositivo resuelto."""
+        """Invoca un servicio de Solarman con el dispositivo resuelto.
+
+        Blindaje de cuelgues (incidente 20-nov-2026): toda llamada se
+        envuelve en ``asyncio.wait_for`` (SERVICIO_TIMEOUT_S). Un
+        servicio que no retorna (p. ej. lectura con un esquema de
+        campos que el datalogger no atiende) aborta con un error
+        audible en vez de colgar el executor sin rastro en la
+        auditoría.
+        """
         carga = dict(datos)
         carga[CAMPO_DEVICE] = await self._resolver_device()
         try:
             if con_respuesta:
-                return await self.hass.services.async_call(
-                    DOMINIO_SOLARMAN,
-                    servicio,
-                    carga,
-                    blocking=True,
-                    return_response=True,
+                return await asyncio.wait_for(
+                    self.hass.services.async_call(
+                        DOMINIO_SOLARMAN,
+                        servicio,
+                        carga,
+                        blocking=True,
+                        return_response=True,
+                    ),
+                    timeout=SERVICIO_TIMEOUT_S,
                 )
-            await self.hass.services.async_call(
-                DOMINIO_SOLARMAN, servicio, carga, blocking=True
+            await asyncio.wait_for(
+                self.hass.services.async_call(
+                    DOMINIO_SOLARMAN, servicio, carga, blocking=True
+                ),
+                timeout=SERVICIO_TIMEOUT_S,
             )
             return None
+        except TimeoutError as err:
+            raise ErrorEscrituraSolarman(
+                f"El servicio {DOMINIO_SOLARMAN}.{servicio} no respondió "
+                f"en {SERVICIO_TIMEOUT_S:.0f} s (posible cuelgue)"
+            ) from err
         except HomeAssistantError as err:
             raise ErrorEscrituraSolarman(
                 f"El servicio {DOMINIO_SOLARMAN}.{servicio} falló: {err}"
@@ -250,19 +277,18 @@ class EscritorSolarman:
     async def leer(self, addr: int, cantidad: int = 1) -> list[int]:
         """Lee registros holding vía servicio (relectura de verificación).
 
-        La generación actual usa el campo ``count``; la legada,
-        ``quantity``.
+        Ambas generaciones se llaman con ``address`` + ``count``: es
+        el esquema que responde. El par ``register`` + ``quantity``
+        pasa la validación del servicio pero la llamada no retorna
+        nunca (cuelga sin excepción; incidente 20-nov-2026, ver
+        docs/nota_parche_verify_livelock.md).
         """
         servicio = self._servicio(
             "leer", SERVICIO_LEER_ACTUAL, SERVICIO_LEER_LEGADO
         )
-        campo = (
-            CAMPO_CANTIDAD if servicio == SERVICIO_LEER_ACTUAL
-            else CAMPO_CANTIDAD_LEGADO
-        )
         respuesta = await self._invocar(
             servicio,
-            {CAMPO_REGISTRO: int(addr), campo: int(cantidad)},
+            {CAMPO_DIRECCION: int(addr), CAMPO_CANTIDAD: int(cantidad)},
             con_respuesta=True,
         )
         return _extraer_registros(respuesta, cantidad)
@@ -781,7 +807,19 @@ class EjecutorControl:
         )
         self._estado_simulado = None
         for addr, valor in pendientes.items():
-            await self._escritor.escribir(addr, valor)
+            try:
+                await self._escritor.escribir(addr, valor)
+            except ErrorEscrituraSolarman as err:
+                _LOGGER.error(
+                    "Error escribiendo %d=%d (%s): %s",
+                    addr, valor, motivo, err,
+                )
+                await self._auditar(
+                    tramo, {addr: valor}, ejecutada=False,
+                    verificado="error_escritura", motivo=f"{motivo}: {err}",
+                )
+                self._actualizar_estado()
+                raise
             self._escrituras_ts.append(datetime.now(tz=UTC))
             inicio = datetime.now(tz=UTC)
             verificado = await self._verificar(addr, valor)

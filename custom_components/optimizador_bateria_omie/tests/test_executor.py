@@ -493,17 +493,37 @@ class TestEscritorSolarman:
             await escritor.escribir(210, 50)
 
     @pytest.mark.asyncio
-    async def test_leer_actual_campo_count(self):
-        """Generación actual: read_multiple_holding_registers con count,
-        respuesta {registro: valor} como la integral real."""
+    async def test_leer_actual_campo_address_count(self):
+        """Generación actual: address+count; el esquema register+count
+        del adversario cuelga sin excepción (incidente 20-nov-2026)."""
         hass = self._hass()
         hass.services.async_call = AsyncMock(return_value={210: 42})
         escritor = EscritorSolarman(hass, "device-x")
 
         assert await escritor.leer(210, 1) == [42]
         tipo, servicio, carga = hass.services.async_call.call_args.args
-        assert (tipo, servicio) == ("solarman", "read_multiple_holding_registers")
-        assert carga == {"device": "device-x", "register": 210, "count": 1}
+        assert (
+            tipo, servicio
+        ) == ("solarman", "read_multiple_holding_registers")
+        assert carga == {"device": "device-x", "address": 210, "count": 1}
+
+    @pytest.mark.asyncio
+    async def test_leer_legada_campo_address_count(self):
+        """Generación legada: read_holding_registers también con
+        address+count (0.15 era register+quantity → cuelgue)."""
+        hass = self._hass()
+        hass.services.has_service = MagicMock(
+            side_effect=lambda dominio, nombre: (
+                nombre == "read_holding_registers"
+            )
+        )
+        hass.services.async_call = AsyncMock(return_value={210: 42})
+        escritor = EscritorSolarman(hass, "device-x")
+
+        assert await escritor.leer(210, 1) == [42]
+        tipo, servicio, carga = hass.services.async_call.call_args.args
+        assert (tipo, servicio) == ("solarman", "read_holding_registers")
+        assert carga == {"device": "device-x", "address": 210, "count": 1}
 
     @pytest.mark.asyncio
     async def test_resolucion_automatica_primer_device(self):
@@ -792,6 +812,115 @@ class TestWatchdog:
 
         assert executor.estado == "fallback_bloqueado"
         assert escritor._leidos[232] == 0
+
+
+class TestLivelockVerify:
+    """Incidente 20-nov-2026 (parche 0.14.3): lecturas colgadas del
+    servicio Solarman mataban el bucle de escritura en el primer
+    registro, sin excepción ni auditoría. Fixes A/B/C del parche."""
+
+    def _leer_lineas(self, hass) -> list[dict]:
+        import json
+        from pathlib import Path
+
+        ruta = (
+            Path(hass.config.config_dir)
+            / "optimizador_bateria_omie"
+            / "auditoria_escrituras.jsonl"
+        )
+        assert ruta.exists()
+        return [
+            json.loads(linea)
+            for linea in ruta.read_text(encoding="utf-8").splitlines()
+        ]
+
+    @pytest.mark.asyncio
+    async def test_lectura_colgada_timeout_parcial_y_executor_vivo(
+        self, hass, mapa
+    ):
+        """Fix B: lectura que nunca retorna → verify 'parcial' audible
+        en ≤ SERVICIO_TIMEOUT_S y el bucle sigue (auditado por registro)."""
+        import asyncio as aio
+
+        async def _colgar(dominio, servicio, datos,
+                          blocking=False, return_response=False):
+            if return_response:  # lectura: el cuelgue del incidente
+                await aio.Event().wait()
+
+        hass.services.async_call = AsyncMock(side_effect=_colgar)
+        escritor = EscritorSolarman(hass, "device-x")
+        executor = _executor(
+            hass, mapa, escritor, _tramo(ACCION_CARGA_RED),
+            entry_data={"modo_activacion": "completo",
+                        "latencia_verify_s": 0},
+        )
+        executor._control_activo = True
+
+        with patch(
+            "custom_components.optimizador_bateria_omie.executor"
+            ".SERVICIO_TIMEOUT_S",
+            0.1,
+        ):
+            await executor.async_aplicar_tramo("test")
+
+        # Cada registro escrito queda auditado con verify 'parcial'
+        lineas = self._leer_lineas(hass)
+        assert len(lineas) == 3  # 210, 230, 232: el bucle NO murió en 210
+        for linea in lineas:
+            assert linea["ejecutada"] is True
+            assert linea["verificado"] == "parcial"
+        # 'parcial' no cuenta para el fallback (D5) y el executor sigue vivo
+        assert executor._fallos_consecutivos == 0
+        assert executor.estado == "activo"
+
+    @pytest.mark.asyncio
+    async def test_error_escritura_auditado_y_propagado(
+        self, hass, mapa, escritor
+    ):
+        """Fix C: un fallo de escribir() deja línea de auditoría
+        (error_escritura) antes de re-lanzar la excepción."""
+
+        async def _fallo(addr, valor):
+            raise ErrorEscrituraSolarman("boom de red")
+
+        escritor.escribir = AsyncMock(side_effect=_fallo)
+        executor = _executor(
+            hass, mapa, escritor, _tramo(ACCION_CARGA_RED),
+            entry_data={"modo_activacion": "completo"},
+        )
+        executor._control_activo = True
+
+        with pytest.raises(ErrorEscrituraSolarman, match="boom de red"):
+            await executor.async_aplicar_tramo("test")
+
+        lineas = self._leer_lineas(hass)
+        assert len(lineas) == 1
+        assert lineas[0]["ejecutada"] is False
+        assert lineas[0]["verificado"] == "error_escritura"
+        assert "boom de red" in lineas[0]["motivo"]
+
+    @pytest.mark.asyncio
+    async def test_cuota_rate_limiter_intacta_tras_error(
+        self, hass, mapa, escritor
+    ):
+        """Fix C: el append de la cuota va tras el éxito → un error de
+        escritura no repe la cuota (0 consumidas tras el fallo)."""
+
+        async def _fallo(addr, valor):
+            raise ErrorEscrituraSolarman("boom de red")
+
+        escritor.escribir = AsyncMock(side_effect=_fallo)
+        executor = _executor(
+            hass, mapa, escritor, _tramo(ACCION_CARGA_RED),
+            entry_data={"modo_activacion": "completo"},
+        )
+        executor._control_activo = True
+
+        with pytest.raises(ErrorEscrituraSolarman):
+            await executor.async_aplicar_tramo("test")
+
+        assert executor._escrituras_ts == []
+        assert executor.estado_detalle["escrituras_ultima_hora"] == 0
 
 
 class TestGuardPotencia:
