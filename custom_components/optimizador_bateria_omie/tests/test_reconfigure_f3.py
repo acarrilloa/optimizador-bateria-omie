@@ -80,6 +80,32 @@ class TestSchemaF3:
         with pytest.raises(vol.Invalid):
             CONFIG_SCHEMA({**ENTRADA_F2, "soc_max": 105})
 
+    def test_defaults_arranque_carga_red_f52(self):
+        """F5.2: puntos de arranque 228/229 con defaults no bloqueantes."""
+        from custom_components.optimizador_bateria_omie.const import (
+            DEFAULT_ARRANQUE_CARGA_RED_SOC,
+            DEFAULT_ARRANQUE_CARGA_RED_V,
+        )
+
+        datos = CONFIG_SCHEMA(dict(ENTRADA_F2))
+        assert (
+            datos["arranque_carga_red_v"] == DEFAULT_ARRANQUE_CARGA_RED_V
+        )
+        assert (
+            datos["arranque_carga_red_soc"]
+            == DEFAULT_ARRANQUE_CARGA_RED_SOC
+        )
+
+    def test_rangos_arranque_carga_red_f52(self):
+        """F5.2: fuera de rango → Invalid; 229 configurable (rebote)."""
+        with pytest.raises(vol.Invalid):
+            CONFIG_SCHEMA({**ENTRADA_F2, "arranque_carga_red_v": 7000})
+        with pytest.raises(vol.Invalid):
+            CONFIG_SCHEMA({**ENTRADA_F2, "arranque_carga_red_soc": 101})
+        # 229 a 90 (adenda: si el datalogger rebota el 100) es válido
+        datos = CONFIG_SCHEMA({**ENTRADA_F2, "arranque_carga_red_soc": 90})
+        assert datos["arranque_carga_red_soc"] == 90
+
     def test_valores_editables_aceptados(self):
         datos = CONFIG_SCHEMA(
             {

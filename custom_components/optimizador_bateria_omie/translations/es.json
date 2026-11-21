@@ -57,7 +57,9 @@
           "cargo_sistema_valle": "Cargo de sistema valle (€/kWh)",
           "impuesto_electrico_pct": "Impuesto eléctrico (%)",
           "iva_pct": "IVA (%)",
-          "aplicar_impuestos_precio": "Aplicar impuestos al precio"
+          "aplicar_impuestos_precio": "Aplicar impuestos al precio",
+          "arranque_carga_red_v": "Arranque de carga: voltaje (centésimas de V)",
+          "arranque_carga_red_soc": "Arranque de carga: SOC (%)"
         }
       },
       "reconfigure": {
@@ -114,7 +116,9 @@
           "cargo_sistema_valle": "Cargo de sistema valle (€/kWh)",
           "impuesto_electrico_pct": "Impuesto eléctrico (%)",
           "iva_pct": "IVA (%)",
-          "aplicar_impuestos_precio": "Aplicar impuestos al precio"
+          "aplicar_impuestos_precio": "Aplicar impuestos al precio",
+          "arranque_carga_red_v": "Arranque de carga: voltaje (centésimas de V)",
+          "arranque_carga_red_soc": "Arranque de carga: SOC (%)"
         }
       }
     },

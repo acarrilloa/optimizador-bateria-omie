@@ -82,9 +82,22 @@ def _sin_espera_verify():
 
 @pytest.fixture
 def escritor():
-    """Escritor fake: escribir registra el valor y leer lo devuelve."""
+    """Escritor fake: escribir registra el valor y leer lo devuelve.
+
+    Los puntos de arranque 228/229 se siembran con los valores objetivo
+    por defecto para que el rearme F5.2 sea no-op; cada test siembra
+    la deriva que quiera reproducir.
+    """
+    from custom_components.optimizador_bateria_omie.const import (
+        DEFAULT_ARRANQUE_CARGA_RED_SOC,
+        DEFAULT_ARRANQUE_CARGA_RED_V,
+    )
+
     w = MagicMock()
-    w._leidos: dict[int, int] = {}
+    w._leidos: dict[int, int] = {
+        228: DEFAULT_ARRANQUE_CARGA_RED_V,
+        229: DEFAULT_ARRANQUE_CARGA_RED_SOC,
+    }
 
     async def _escribir(addr, valor):
         w._leidos[addr] = valor
@@ -605,8 +618,9 @@ class TestVerify:
         await executor.async_aplicar_tramo("test")
 
         assert executor._fallos_consecutivos == 0
-        # una relectura por escritura
-        assert escritor.leer.call_count == 3
+        # F5.2: 2 lecturas de rearme (228/229) + una relectura por
+        # escritura
+        assert escritor.leer.call_count == 5
 
     @pytest.mark.asyncio
     async def test_verify_fallo_cuenta_y_resetea(self, hass, mapa, escritor):
@@ -663,12 +677,20 @@ class TestVerify:
 
     @pytest.mark.asyncio
     async def test_verify_parcial_no_cuenta_fallo(self, hass, mapa, escritor):
-        """Relectura con error de servicio → parcial, sin contar fallo."""
+        """Relectura con error de servicio → parcial, sin contar fallo.
+
+        F5.2: las lecturas de rearme (228/229) deben responder; solo
+        la relectura de verify de los registros de control falla.
+        """
+
+        async def _leer(addr, cantidad=1):
+            if addr in (228, 229):
+                return [escritor._leidos.get(addr, 0)]
+            raise ErrorEscrituraSolarman("timeout de relectura")
+
+        escritor.leer = AsyncMock(side_effect=_leer)
         executor = _executor(hass, mapa, escritor, _tramo(ACCION_CARGA_RED))
         executor._control_activo = True
-        escritor.leer = AsyncMock(
-            side_effect=ErrorEscrituraSolarman("timeout de relectura")
-        )
 
         await executor.async_aplicar_tramo("test")
 
@@ -839,7 +861,12 @@ class TestLivelockVerify:
         self, hass, mapa
     ):
         """Fix B: lectura que nunca retorna → verify 'parcial' audible
-        en ≤ SERVICIO_TIMEOUT_S y el bucle sigue (auditado por registro)."""
+        en ≤ SERVICIO_TIMEOUT_S y el bucle sigue (auditado por registro).
+
+        F5.2: se usa AUTOCONSUMO porque una CARGA_RED abortaría antes
+        (el rearme 228/229 lee primero y cuelga igual); su cobertura
+        está en el test siguiente.
+        """
         import asyncio as aio
 
         async def _colgar(dominio, servicio, datos,
@@ -850,7 +877,7 @@ class TestLivelockVerify:
         hass.services.async_call = AsyncMock(side_effect=_colgar)
         escritor = EscritorSolarman(hass, "device-x")
         executor = _executor(
-            hass, mapa, escritor, _tramo(ACCION_CARGA_RED),
+            hass, mapa, escritor, _tramo(ACCION_AUTOCONSUMO),
             entry_data={"modo_activacion": "completo",
                         "latencia_verify_s": 0},
         )
@@ -872,6 +899,45 @@ class TestLivelockVerify:
         # 'parcial' no cuenta para el fallback (D5) y el executor sigue vivo
         assert executor._fallos_consecutivos == 0
         assert executor.estado == "activo"
+
+    @pytest.mark.asyncio
+    async def test_carga_red_con_lectura_colgada_aborta_audible(
+        self, hass, mapa
+    ):
+        """F5.2: CARGA_RED con lecturas colgadas → el rearme de 228/229
+        aborta el tramo (auditado) en vez de armar un 232=1 a ciegas."""
+        import asyncio as aio
+
+        async def _colgar(dominio, servicio, datos,
+                          blocking=False, return_response=False):
+            if return_response:
+                await aio.Event().wait()
+
+        hass.services.async_call = AsyncMock(side_effect=_colgar)
+        escritor = EscritorSolarman(hass, "device-x")
+        executor = _executor(
+            hass, mapa, escritor, _tramo(ACCION_CARGA_RED),
+            entry_data={"modo_activacion": "completo",
+                        "latencia_verify_s": 0},
+        )
+        executor._control_activo = True
+
+        with patch(
+            "custom_components.optimizador_bateria_omie.executor"
+            ".SERVICIO_TIMEOUT_S",
+            0.1,
+        ):
+            await executor.async_aplicar_tramo("test")
+
+        # Abortado antes de escribir nada, pero audible y vivo
+        lineas = self._leer_lineas(hass)
+        assert len(lineas) == 1
+        assert lineas[0]["ejecutada"] is False
+        assert (
+            "puntos de arranque no asegurables" in lineas[0]["motivo"]
+        )
+        assert executor.estado == "dry_run"
+        assert executor._escrituras_ts == []  # cuota intacta
 
     @pytest.mark.asyncio
     async def test_error_escritura_auditado_y_propagado(
@@ -1210,3 +1276,146 @@ class TestAuditoria:
         )
         assert fallback["ejecutada"] is True
         assert fallback["verificado"] == "fallback"
+
+
+class TestRearmeArranqueF52:
+    """F5.2: saneo de puntos de arranque 228/229 y cap de 245."""
+
+    def _auditoria(self, hass) -> list[dict]:
+        import json
+        from pathlib import Path
+
+        ruta = (
+            Path(hass.config.config_dir)
+            / "optimizador_bateria_omie"
+            / "auditoria_escrituras.jsonl"
+        )
+        assert ruta.exists()
+        return [
+            json.loads(linea)
+            for linea in ruta.read_text(encoding="utf-8").splitlines()
+        ]
+
+    @pytest.mark.asyncio
+    async def test_deriva_reescribe_arranque_antes_de_armar(
+        self, hass, mapa, escritor
+    ):
+        # 228=4900 (49 V): el push del datalogger congela la carga
+        escritor._leidos[228] = 4900
+        executor = _executor(hass, mapa, escritor, _tramo(ACCION_CARGA_RED))
+        executor._control_activo = True
+
+        await executor.async_aplicar_tramo("test")
+
+        orden = [llamada.args[0] for llamada in escritor.escribir.call_args_list]
+        assert orden.index(228) < orden.index(232)  # rearme antes de armar
+        escrituras = _escrituras(escritor)
+        assert escrituras[228] == 6100
+        assert escrituras[232] == 1
+        assert any(
+            "rearme arranque (leído 4900)" in linea["motivo"]
+            for linea in self._auditoria(hass)
+        )
+
+    @pytest.mark.asyncio
+    async def test_sin_deriva_no_reescribe_arranque(
+        self, hass, mapa, escritor
+    ):
+        executor = _executor(hass, mapa, escritor, _tramo(ACCION_CARGA_RED))
+        executor._control_activo = True
+
+        await executor.async_aplicar_tramo("test")
+
+        escrituras = _escrituras(escritor)
+        assert 228 not in escrituras
+        assert 229 not in escrituras
+        assert escrituras[210] == round(5000.0 / VOLTAJE)
+        assert escrituras[230] == round(2450.0 / VOLTAJE)
+        assert escrituras[232] == 1
+
+    @pytest.mark.asyncio
+    async def test_arranque_no_asegurable_aborta_tramo(
+        self, hass, mapa, escritor
+    ):
+        escritor.leer = AsyncMock(
+            side_effect=ErrorEscrituraSolarman("lectura caída")
+        )
+        executor = _executor(hass, mapa, escritor, _tramo(ACCION_CARGA_RED))
+        executor._control_activo = True
+
+        await executor.async_aplicar_tramo("test")
+
+        # Abortar antes de armar el tramo: ni 232 ni ningún registro
+        assert escritor.escribir.await_count == 0
+        assert executor._estado_simulado == "arranque_bloqueado"
+        assert executor.estado == "dry_run"
+        assert any(
+            "puntos de arranque no asegurables" in linea["motivo"]
+            for linea in self._auditoria(hass)
+        )
+
+    @pytest.mark.asyncio
+    async def test_cap_exportacion_recorta_venta(self, hass, mapa, escritor):
+        escritor._leidos[245] = 5000
+        executor = _executor(
+            hass, mapa, escritor,
+            _tramo(ACCION_VENTA_RED, venta_w=5193.0),
+            entry_data={"modo_activacion": "completo"},
+        )
+        executor._control_activo = True
+
+        await executor.async_aplicar_tramo("test")
+
+        # cap a la baja: int(5000/51.2) = 97, no round(5193/51.2) = 101
+        assert _escrituras(escritor)[211] == 97
+
+    @pytest.mark.asyncio
+    async def test_sin_cap_exportacion_venta_intacta(
+        self, hass, mapa, escritor
+    ):
+        executor = _executor(
+            hass, mapa, escritor,
+            _tramo(ACCION_VENTA_RED, venta_w=5193.0),
+            entry_data={"modo_activacion": "completo"},
+        )
+        executor._control_activo = True
+
+        await executor.async_aplicar_tramo("test")
+
+        assert _escrituras(escritor)[211] == round(5193.0 / VOLTAJE)
+
+    @pytest.mark.asyncio
+    async def test_cooldown_rearme_una_hora_por_registro(
+        self, hass, mapa, escritor
+    ):
+        # 229 rebota: siempre se lee 90 aunque se escriba 100
+        async def _leer(addr, cantidad=1):
+            return [90 if addr == 229 else escritor._leidos.get(addr, 0)]
+
+        escritor.leer = AsyncMock(side_effect=_leer)
+        executor = _executor(hass, mapa, escritor, _tramo(ACCION_CARGA_RED))
+        executor._control_activo = True
+        await executor.async_aplicar_tramo("tramo 1")
+
+        escrituras_229 = [
+            llamada
+            for llamada in escritor.escribir.call_args_list
+            if llamada.args[0] == 229
+        ]
+        assert len(escrituras_229) == 1  # primera vez: una reescritura
+
+        await executor.async_aplicar_tramo("tramo 2")
+
+        escrituras_229 = [
+            llamada
+            for llamada in escritor.escribir.call_args_list
+            if llamada.args[0] == 229
+        ]
+        # Enfriamiento: no se reescribe mientras siga rebotando
+        assert len(escrituras_229) == 1
+        lineas = self._auditoria(hass)
+        assert any(
+            linea["verificado"] == "rearme_enfriamiento" for linea in lineas
+        )
+        # Y el tramo NO se aborta: el 232 quedó aplicado
+        assert _escrituras(escritor)[232] == 1

@@ -1,0 +1,223 @@
+diff --git a/custom_components/optimizador_bateria_omie/const.py b/custom_components/optimizador_bateria_omie/const.py
+--- a/custom_components/optimizador_bateria_omie/const.py
++++ b/custom_components/optimizador_bateria_omie/const.py
+@@ -59,6 +59,10 @@ CONF_SOC_MAX = "soc_max"
+ CONF_POTENCIA_MAX_CARGA = "potencia_max_carga"
+ CONF_POTENCIA_MAX_DESCARGA = "potencia_max_descarga"
++CONF_ARRANQUE_CARGA_RED_SOC = "arranque_carga_red_soc"
++CONF_ARRANQUE_CARGA_RED_V = "arranque_carga_red_v"
+ CONF_POTENCIA_CONTRATADA = "potencia_contratada"
+*** HUNK AJUSTAR: las dos líneas CONF_ARRANQUE se añaden tras
+*** CONF_POTENCIA_MAX_DESCARGA; mantener el orden alfabético del bloque.
+@@ -101,6 +105,15 @@ DEFAULT_POTENCIA_MAX_CARGA = 5000.0
+ DEFAULT_POTENCIA_MAX_DESCARGA = 5000.0
++DEFAULT_ARRANQUE_CARGA_RED_SOC = 100
++# 61.00 V > tensión máxima del banco (≈53 V): la condición de arranque por
++# voltaje (228) queda siempre satisfecha; la llave real es 232 (F5.2).
++DEFAULT_ARRANQUE_CARGA_RED_V = 6100
+ DEFAULT_POTENCIA_CONTRATADA = 5750.0
+*** Igual que arriba: insertar tras DEFAULT_POTENCIA_MAX_DESCARGA.
+
+diff --git a/custom_components/optimizador_bateria_omie/registers.yaml b/custom_components/optimizador_bateria_omie/registers.yaml
+--- a/custom_components/optimizador_bateria_omie/registers.yaml
++++ b/custom_components/optimizador_bateria_omie/registers.yaml
+@@ -40,6 +40,16 @@ control:
+       corriente_carga_red:  { addr: 230, scale: 1, unit: "A", min: 0, max: 135 }
+       habilitar_carga_red:  { addr: 232, valores: [0, 1] }
++      # F5.2 (21-nov-2026): el Deye evalúa la carga desde red como AND
++      # (V batería < 228 Y SOC < 229). Con el 228 de fábrica (4900 =
++      # 49 V) una batería a ~52 V congela la carga y suspende además
++      # la descarga. Se dejan en 6100/100 (llave real: 232) y el
++      # Executor los sanea antes de cada CARGA_RED (derivas por push
++      # de configuración del datalogger Solarman tras reinicios de HA).
++      arranque_carga_red_v: { addr: 228, scale: 1, unit: "0.01V", min: 0, max: 6300 }
++      arranque_carga_red_soc: { addr: 229, scale: 1, unit: "%", min: 0, max: 100 }
++      # F5.2: límite de exportación a red (para capar la corriente de VENTA_RED)
++      max_exportacion_red: { addr: 245, scale: 1, unit: "W", min: 0, max: 8000 }
+       soc_minimo:           { addr: 217, scale: 1, unit: "%", min: 10, max: 100 }
+
+diff --git a/custom_components/optimizador_bateria_omie/executor.py b/custom_components/optimizador_bateria_omie/executor.py
+--- a/custom_components/optimizador_bateria_omie/executor.py
++++ b/custom_components/optimizador_bateria_omie/executor.py
+@@ -41,6 +41,8 @@ from custom_components.optimizador_bateria_omie.const import (
+     ACCIONES_MANUALES,
++    CONF_ARRANQUE_CARGA_RED_SOC,
++    CONF_ARRANQUE_CARGA_RED_V,
+     CONF_DEVICE_ID_SOLARMAN,
+@@ -57,6 +59,8 @@ (mismo bloque de import)
+     DEBOUNCE_TELEMETRIA,
++    DEFAULT_ARRANQUE_CARGA_RED_SOC,
++    DEFAULT_ARRANQUE_CARGA_RED_V,
+     DEFAULT_DEVICE_ID_SOLARMAN,
+*** Los números de línea del encabezado son orientativos: los dos pares de
+*** nombres se insertan en el bloque `const import (` respetando el orden
+*** alfabético existente (CONF_ARRANQUE_* antes de CONF_DEVICE_ID_SOLARMAN;
+*** DEFAULT_ARRANQUE_* entre DEBOUNCE_TELEMETRIA y DEFAULT_DEVICE_ID_SOLARMAN).
+
+@@ -349,6 +353,8 @@ class EjecutorControl:
+         self._ultimo_aplicado: dict[int, int] = {}
+         self._escrituras_ts: list[datetime] = []
++        self._max_exportacion_w: int | None = None
++        self._max_exportacion_ts: datetime | None = None
+         self._fallos_consecutivos = 0
+
+@@ -475,6 +481,12 @@ hacia 210/230/232.
+         if tramo.accion == ACCION_VENTA_RED:
+             corriente = self._recortar_corriente(
+                 "corriente_descarga",
+                 abs(tramo.potencia_venta_red_w) / voltaje,
+             )
++            if self._max_exportacion_w is not None:
++                # F5.2: el inversor recorta físicamente la exportación al
++                # límite del registro 245; capar aquí evita tramos de venta
++                # inalcanzables (p. ej. plan de 5193 W con 245=5000).
++                corriente = min(
++                    corriente, round(self._max_exportacion_w / voltaje)
++                )
+             return {
+                 addr_carga: limite_carga,
+
+@@ -490,6 +502,64 @@ hacia 210/230/232.
+     def _filtrar_idempotente(self, objetivos: dict[int, int]) -> dict[int, int]:
+         """Descarta escrituras cuyo valor ya está aplicado (D8)."""
+         return {
+             addr: valor
+             for addr, valor in objetivos.items()
+             if self._ultimo_aplicado.get(addr) != valor
+         }
++
++    # ─── F5.2: rearme de arranque y cap de exportación (21-nov-2026) ───
++
++    async def _asegurar_arranque_carga(
++        self, tramo: PlanTramo, motivo: str
++    ) -> bool:
++        """Sanea los puntos de arranque de carga desde red (228/229).
++
++        El Deye combina los puntos de arranque como AND: la carga desde
++        red solo arranca si el voltaje de batería es menor que 228 Y el
++        SOC menor que 229. Con 228 de fábrica (4900 = 49 V) una batería
++        a ~52 V nunca pasa el umbral: el inversor queda en "carga
++        pendiente", sin cargar y además sin descargar. Como el
++        datalogger Solarman re-empuja configuración tras reinicios de
++        HA (incidente 21-nov-2026: ToU reactivado, 228→4900, 229→90),
++        antes de armar una CARGA_RED se releen 228/229 y solo se
++        reescriben si derivaron del objetivo (las lecturas no consumen
++        cuota del rate limiter). Devuelve False si no se pudo garantizar
++        el estado (abortar el tramo es más seguro que armar un 232=1
++        con los puntos de arranque bloqueados: la batería quedaría
++        congelada a 0 W).
++        """
++        addr_v = self.mapa.direccion(
++            "estandar", "arranque_carga_red_v", "control"
++        )
++        addr_soc = self.mapa.direccion(
++            "estandar", "arranque_carga_red_soc", "control"
++        )
++        objetivos = {
++            addr_v: int(
++                self._param(CONF_ARRANQUE_CARGA_RED_V,
++                            DEFAULT_ARRANQUE_CARGA_RED_V)
++            ),
++            addr_soc: int(
++                self._param(CONF_ARRANQUE_CARGA_RED_SOC,
++                            DEFAULT_ARRANQUE_CARGA_RED_SOC)
++            ),
++        }
++        for addr, esperado in objetivos.items():
++            try:
++                leido = (await self._escritor.leer(addr, 1))[0]
++            except ErrorEscrituraSolarman as err:
++                _LOGGER.warning(
++                    "Rearme arranque: no se pudo leer %d (%s); tramo abortado",
++                    addr, err,
++                )
++                return False
++            if leido == esperado:
++                continue
++            _LOGGER.warning(
++                "Punto de arranque %d=%d deriva del objetivo %d: "
++                "reescribiendo (F5.2)", addr, leido, esperado,
++            )
++            inicio = datetime.now(tz=UTC)
++            try:
++                await self._escritor.escribir(addr, esperado)
++            except ErrorEscrituraSolarman as err:
++                _LOGGER.error(
++                    "Error escribiendo el punto de arranque %d=%d: %s",
++                    addr, esperado, err,
++                )
++                await self._auditar(
++                    tramo, {addr: esperado}, ejecutada=False,
++                    verificado="error_escritura",
++                    motivo=f"{motivo}: rearme arranque: {err}",
++                )
++                return False
++            self._escrituras_ts.append(datetime.now(tz=UTC))
++            verificado = await self._verificar(addr, esperado)
++            latencia = (datetime.now(tz=UTC) - inicio).total_seconds()
++            await self._auditar(
++                tramo, {addr: esperado}, ejecutada=True,
++                verificado=verificado, latencia_s=latencia,
++                motivo=f"{motivo}: rearme arranque (leído {leido})",
++            )
++            self._ultimo_aplicado[addr] = esperado
++        return True
++
++    async def _refrescar_max_exportacion(self) -> None:
++        """F5.2: lee el límite de exportación a red (245) con caché 1 h."""
++        ahora = datetime.now(tz=UTC)
++        if (
++            self._max_exportacion_ts is not None
+            and (ahora - self._max_exportacion_ts).total_seconds() < 3600
++        ):
++            return
++        addr = self.mapa.direccion(
++            "estandar", "max_exportacion_red", "control"
++        )
++        try:
++            leido = (await self._escritor.leer(addr, 1))[0]
++        except ErrorEscrituraSolarman as err:
++            _LOGGER.warning(
++                "No se pudo leer el límite de exportación 245: %s", err
++            )
++            return
++        if leido > 0:
++            self._max_exportacion_w = int(leido)
++            _LOGGER.info(
++                "Límite de exportación a red (245): %d W", leido
++            )
++        self._max_exportacion_ts = ahora
+
+     # ─── Salvaguardas (U4) ───
+
+*** El método _asegurar_arranque_carga y _refrescar_max_exportacion se
+*** insertan entre _filtrar_idempotente y el banner "# ─── Salvaguardas
+*** (U4) ───". NOTA: una línea del cuerpo de _refrescar_max_exportacion
+*** perdió el prefijo "+" en este diff ((ahora - ...).total_seconds());
+*** añadirlo al aplicar.
+
+@@ -779,6 +889,15 @@ de async_aplicar_tramo (tras el bloque gradual y antes del guard D9):
+         # (carga activa incluida) hasta TIMEOUT_TELEMETRIA_S, momento
+         # en el que el fallback aplica los valores seguros.
+*** (contexto orientativo)
++        # F5.2 (21-nov-2026): sanear los puntos de arranque de la carga
++        # desde red ANTES de armar el tramo (el AND 228/229 puede
++        # derivar por push del datalogger; con 228=49 V la carga queda
++        # congelada y la descarga suspendida).
++        if tramo.accion == ACCION_CARGA_RED:
++            if not await self._asegurar_arranque_carga(tramo, motivo):
++                self._estado_simulado = "arranque_bloqueado"
++                await self._auditar(
++                    tramo, objetivos, ejecutada=False,
++                    motivo=f"{motivo}: puntos de arranque no asegurables",
++                )
++                self._actualizar_estado()
++                return
++        # F5.2: refrescar el límite de exportación (245) para capar
++        # la corriente de VENTA_RED por el máximo real del inversor.
++        if tramo.accion == ACCION_VENTA_RED:
++            await self._refrescar_max_exportacion()
++
+         # Guard dinámico de potencia contratada (D9)
+         objetivos = self._aplicar_guard(objetivos)
+         pendientes = self._filtrar_idempotente(objetivos)

@@ -12,6 +12,7 @@ Fuente única de verdad: `SPEC.md`. Este fichero resume el estado y los criterio
 | F5 — ML + LP | 0.12.0–0.12.1 | ✅ implementada | Forecaster ML con guardrail, LP conmutable, clima AEMET. **Criterio MAPE < 20 % con datos reales: observación en curso del usuario** |
 | F5.3 — Estabilidad del plan y watchdog | 0.13.0 | ✅ implementada | Bloque de compromiso (D-F5.3.1), plan no derribado por gaps de telemetría, watchdog 4× con debounce y timeout de 600 s, estados `gradual`/`sin_telemetria`. Medición de 48 h pendiente del usuario |
 | F6 — Pulido (dashboard, notificaciones, informes) | 0.13.1–0.14.1 | ✅ implementada | Hotfix incidente ×1000 (regex+sanity), avisos persistentes de datos, dashboard YAML de 3 vistas, servicio `resumen_diario`. **Criterio de salida: 30 días sin intervención** |
+| F5.2 — Saneo de arranque 228/229 y cap 245 | 0.14.5 | ✅ implementada | Incidente 21-nov-2026: el AND de arranque (228=49 V) congelaba las cargas; rearme por tramo con cooldown 1 h/regístro y cap de venta al 245 real. Evidencia: `docs/f5_2/` |
 
 ## Pendientes del usuario
 

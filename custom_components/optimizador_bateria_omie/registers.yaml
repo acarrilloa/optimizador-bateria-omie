@@ -38,5 +38,15 @@ familias:
       corriente_descarga:   { addr: 211, scale: 1, unit: "A", min: 0, max: 135 }
       corriente_carga_red:  { addr: 230, scale: 1, unit: "A", min: 0, max: 135 }
       habilitar_carga_red:  { addr: 232, valores: [0, 1] }
+      # F5.2 (21-nov-2026): el Deye evalúa la carga desde red como AND
+      # (V batería < 228 Y SOC < 229). Con el 228 de fábrica (4900 =
+      # 49 V) una batería a ~52 V congela la carga y suspende además
+      # la descarga. Se dejan en 6100/100 (llave real: 232) y el
+      # Executor los sanea antes de cada CARGA_RED (derivas por push
+      # de configuración del datalogger Solarman tras reinicios de HA).
+      arranque_carga_red_v:   { addr: 228, scale: 1, unit: "0.01V", min: 0, max: 6300 }
+      arranque_carga_red_soc: { addr: 229, scale: 1, unit: "%", min: 0, max: 100 }
+      # F5.2: límite de exportación a red (para capar la corriente de VENTA_RED)
+      max_exportacion_red:    { addr: 245, scale: 1, unit: "W", min: 0, max: 8000 }
       soc_minimo:           { addr: 217, scale: 1, unit: "%", min: 10, max: 100 }
       soc_recuperacion:     { addr: 218, scale: 1, unit: "%", min: 10, max: 100 }

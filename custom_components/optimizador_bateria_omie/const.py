@@ -58,6 +58,13 @@ CONF_SOC_MIN = "soc_min"
 CONF_SOC_MAX = "soc_max"
 CONF_POTENCIA_MAX_CARGA = "potencia_max_carga"
 CONF_POTENCIA_MAX_DESCARGA = "potencia_max_descarga"
+# F5.2 (21-nov-2026): puntos de arranque de la carga desde red del
+# Deye (AND: V batería < 228 Y SOC < 229). El datalogger Solarman los
+# re-empuja tras reinicios; el executor los sanea antes de cada
+# CARGA_RED. Si el 229 rebota en la instalación, configurarlo a 90
+# para cero churn (adenda F5.2).
+CONF_ARRANQUE_CARGA_RED_SOC = "arranque_carga_red_soc"
+CONF_ARRANQUE_CARGA_RED_V = "arranque_carga_red_v"
 CONF_POTENCIA_CONTRATADA = "potencia_contratada"
 CONF_MARGEN_POTENCIA = "margen_potencia"
 CONF_EFICIENCIA_ROUND_TRIP = "eficiencia_round_trip"
@@ -100,6 +107,10 @@ DEFAULT_SOC_MIN = 15.0
 DEFAULT_SOC_MAX = 95.0
 DEFAULT_POTENCIA_MAX_CARGA = 5000.0
 DEFAULT_POTENCIA_MAX_DESCARGA = 5000.0
+DEFAULT_ARRANQUE_CARGA_RED_SOC = 100
+# 61,00 V > tensión máxima del banco (≈53 V): la condición de arranque
+# por voltaje (228) queda siempre satisfecha; la llave real es 232.
+DEFAULT_ARRANQUE_CARGA_RED_V = 6100
 DEFAULT_POTENCIA_CONTRATADA = 5750.0
 DEFAULT_MARGEN_POTENCIA = 300.0
 DEFAULT_EFICIENCIA_ROUND_TRIP = 88  # % (entero: el validador exige int)

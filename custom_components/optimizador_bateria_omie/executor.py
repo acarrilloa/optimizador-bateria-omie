@@ -22,7 +22,7 @@ jitter de Solarman ya no derriba el estado); las escrituras se cortan
 desde la PRIMERA observación y el fallback solo llega tras 600 s de
 caída continuada con carga activa.
 """
-# versión 0.14.4
+# versión 0.14.5
 
 import asyncio
 import logging
@@ -36,6 +36,8 @@ from homeassistant.exceptions import HomeAssistantError
 
 from custom_components.optimizador_bateria_omie.const import (
     ACCIONES_MANUALES,
+    CONF_ARRANQUE_CARGA_RED_SOC,
+    CONF_ARRANQUE_CARGA_RED_V,
     CONF_DEVICE_ID_SOLARMAN,
     CONF_ENTITY_ID_POTENCIA_RED,
     CONF_ENTITY_IDS_FALLO,
@@ -50,6 +52,8 @@ from custom_components.optimizador_bateria_omie.const import (
     CONF_VERIFY_TOLERANCIA,
     CONF_VOLTAJE_BATERIA_NOMINAL,
     DEBOUNCE_TELEMETRIA,
+    DEFAULT_ARRANQUE_CARGA_RED_SOC,
+    DEFAULT_ARRANQUE_CARGA_RED_V,
     DEFAULT_DEVICE_ID_SOLARMAN,
     DEFAULT_LATENCIA_VERIFY_S,
     DEFAULT_MAX_ESCRITURAS_HORA,
@@ -124,6 +128,11 @@ CAMPO_CANTIDAD = "count"
 # Blindaje de cuelgues del servicio (incidente 20-nov-2026): toda
 # llamada a Solarman se envuelve en asyncio.wait_for con este margen.
 SERVICIO_TIMEOUT_S = 15.0
+# Cooldown del rearme de los puntos de arranque (F5.2, adenda
+# 229-rebote): no reescribir el mismo registro más de una vez por hora
+# aunque siga derivando (el 229 reaparece en 90 poco después de
+# escribirlo; la carga funciona igual mientras SOC < objetivo).
+REARME_ARRANQUE_COOLDOWN_S = 3600.0
 
 
 class ErrorEscrituraSolarman(Exception):
@@ -348,6 +357,11 @@ class EjecutorControl:
         self._modo_manual: tuple[str, datetime] | None = None
         self._ultimo_aplicado: dict[int, int] = {}
         self._escrituras_ts: list[datetime] = []
+        # F5.2: límite de exportación (245, caché 1 h) y cooldown de
+        # rearme de los puntos de arranque 228/229 (adenda 229-rebote)
+        self._max_exportacion_w: int | None = None
+        self._max_exportacion_ts: datetime | None = None
+        self._ts_rearme: dict[int, datetime] = {}
         self._fallos_consecutivos = 0
         self._aviso_fallo_emitido = False
         self._listeners: list[Callable[[], None]] = []
@@ -478,6 +492,15 @@ class EjecutorControl:
                 "corriente_descarga",
                 abs(tramo.potencia_venta_red_w) / voltaje,
             )
+            # F5.2: el inversor recorta físicamente la exportación al
+            # límite del registro 245; capar aquí (a la baja: int())
+            # evita tramos de venta inalcanzables (p. ej. plan de
+            # 5193 W con 245=5000).
+            if self._max_exportacion_w is not None:
+                corriente = min(
+                    corriente,
+                    int(self._max_exportacion_w / voltaje),
+                )
             return {
                 addr_carga: limite_carga,
                 addr_descarga: corriente,
@@ -494,6 +517,134 @@ class EjecutorControl:
             for addr, valor in objetivos.items()
             if self._ultimo_aplicado.get(addr) != valor
         }
+
+    # ─── F5.2: rearme de arranque y cap de exportación (21-nov-2026) ───
+
+    async def _asegurar_arranque_carga(
+        self, tramo: PlanTramo, motivo: str
+    ) -> bool:
+        """Sanea los puntos de arranque de carga desde red (228/229).
+
+        El Deye combina los puntos de arranque como AND: la carga desde
+        red solo arranca si el voltaje de batería es menor que 228 Y el
+        SOC menor que 229. Con 228 de fábrica (4900 = 49 V) una batería
+        a ~52 V nunca pasa el umbral: el inversor queda en "carga
+        pendiente", sin cargar y además sin descargar. Como el
+        datalogger Solarman re-empuja configuración tras reinicios de
+        HA (incidente 21-nov-2026: ToU reactivado, 228→4900, 229→90),
+        antes de armar una CARGA_RED se releen 228/229 y solo se
+        reescriben si derivaron del objetivo (las lecturas no consumen
+        cuota del rate limiter).
+
+        Cooldown por registro (adenda 229-rebote): nunca reescribir el
+        mismo registro más de una vez por hora aunque siga derivando;
+        con el cooldown activo se audita ``rearme_enfriamiento`` y el
+        tramo continúa (la carga funciona igual mientras SOC <
+        objetivo). Devuelve False solo si no se pudo garantizar el
+        estado: abortar el tramo es más seguro que armar un 232=1 con
+        los puntos de arranque bloqueados (batería congelada a 0 W).
+        """
+        addr_v = self.mapa.direccion(
+            "estandar", "arranque_carga_red_v", "control"
+        )
+        addr_soc = self.mapa.direccion(
+            "estandar", "arranque_carga_red_soc", "control"
+        )
+        objetivos = {
+            addr_v: int(self._param(
+                CONF_ARRANQUE_CARGA_RED_V, DEFAULT_ARRANQUE_CARGA_RED_V,
+            )),
+            addr_soc: int(self._param(
+                CONF_ARRANQUE_CARGA_RED_SOC, DEFAULT_ARRANQUE_CARGA_RED_SOC,
+            )),
+        }
+        for addr, esperado in objetivos.items():
+            try:
+                leido = (await self._escritor.leer(addr, 1))[0]
+            except ErrorEscrituraSolarman as err:
+                _LOGGER.warning(
+                    "Rearme arranque: no se pudo leer %d (%s); tramo abortado",
+                    addr, err,
+                )
+                return False
+            if leido == esperado:
+                continue
+            ahora = datetime.now(tz=UTC)
+            ultimo = self._ts_rearme.get(addr)
+            if (
+                ultimo is not None
+                and (ahora - ultimo).total_seconds()
+                < REARME_ARRANQUE_COOLDOWN_S
+            ):
+                _LOGGER.warning(
+                    "Punto de arranque %d=%d deriva del objetivo %d "
+                    "(rearme en enfriamiento; se continúa, F5.2)",
+                    addr, leido, esperado,
+                )
+                await self._auditar(
+                    tramo, {addr: esperado}, ejecutada=False,
+                    verificado="rearme_enfriamiento",
+                    motivo=f"{motivo}: rearme arranque (leído {leido})",
+                )
+                continue
+            _LOGGER.warning(
+                "Punto de arranque %d=%d deriva del objetivo %d: "
+                "reescribiendo (F5.2)", addr, leido, esperado,
+            )
+            inicio = datetime.now(tz=UTC)
+            try:
+                await self._escritor.escribir(addr, esperado)
+            except ErrorEscrituraSolarman as err:
+                _LOGGER.error(
+                    "Error escribiendo el punto de arranque %d=%d: %s",
+                    addr, esperado, err,
+                )
+                await self._auditar(
+                    tramo, {addr: esperado}, ejecutada=False,
+                    verificado="error_escritura",
+                    motivo=f"{motivo}: rearme arranque: {err}",
+                )
+                return False
+            self._escrituras_ts.append(datetime.now(tz=UTC))
+            self._ts_rearme[addr] = ahora
+            verificado = await self._verificar(addr, esperado)
+            latencia = (datetime.now(tz=UTC) - inicio).total_seconds()
+            await self._auditar(
+                tramo, {addr: esperado}, ejecutada=True,
+                verificado=verificado, latencia_s=latencia,
+                motivo=f"{motivo}: rearme arranque (leído {leido})",
+            )
+            self._ultimo_aplicado[addr] = esperado
+        return True
+
+    async def _refrescar_max_exportacion(self) -> None:
+        """F5.2: lee el límite de exportación a red (245) con caché 1 h.
+
+        Sin dato el cap queda inactivo (no se inventa); la lectura no
+        consume cuota del rate limiter.
+        """
+        ahora = datetime.now(tz=UTC)
+        if (
+            self._max_exportacion_ts is not None
+            and (ahora - self._max_exportacion_ts).total_seconds() < 3600
+        ):
+            return
+        addr = self.mapa.direccion(
+            "estandar", "max_exportacion_red", "control"
+        )
+        try:
+            leido = (await self._escritor.leer(addr, 1))[0]
+        except ErrorEscrituraSolarman as err:
+            _LOGGER.warning(
+                "No se pudo leer el límite de exportación 245: %s", err
+            )
+            return
+        if leido > 0:
+            self._max_exportacion_w = int(leido)
+            _LOGGER.info(
+                "Límite de exportación a red (245): %d W", leido
+            )
+        self._max_exportacion_ts = ahora
 
     # ─── Salvaguardas (U4) ───
 
@@ -706,6 +857,11 @@ class EjecutorControl:
             self._notificar()
             return
 
+        # F5.2: el cap de exportación (245) debe estar fresco ANTES de
+        # traducir el tramo, porque _objetivos_tramo ya recorta la
+        # corriente de venta con él.
+        if tramo.accion == ACCION_VENTA_RED:
+            await self._refrescar_max_exportacion()
         objetivos = self._objetivos_tramo(tramo)
         self._motivo_estado = (
             f"{motivo}: acción {tramo.accion} "
@@ -772,6 +928,23 @@ class EjecutorControl:
             await self._auditar(
                 tramo, objetivos, ejecutada=False,
                 motivo=f"{motivo}: simulada por modo gradual",
+            )
+            self._actualizar_estado()
+            return
+
+        # F5.2 (21-nov-2026): sanear los puntos de arranque de la carga
+        # desde red ANTES de armar el tramo (el AND 228/229 puede
+        # derivar por push del datalogger; con 228=49 V la carga queda
+        # congelada y la descarga suspendida). Solo se ejecuta cuando
+        # la acción ya superó el filtro de modo gradual.
+        if (
+            tramo.accion == ACCION_CARGA_RED
+            and not await self._asegurar_arranque_carga(tramo, motivo)
+        ):
+            self._estado_simulado = "arranque_bloqueado"
+            await self._auditar(
+                tramo, objetivos, ejecutada=False,
+                motivo=f"{motivo}: puntos de arranque no asegurables",
             )
             self._actualizar_estado()
             return
@@ -1175,6 +1348,10 @@ class EjecutorControl:
         ``sin_telemetria`` se declara tras el debounce (D-F5.3.3) y
         ``gradual`` diferencia la simulación del modo gradual del
         ``dry_run`` real (control OFF ya se reporta como ``inactivo``).
+        F5.2: ``arranque_bloqueado`` (puntos de arranque 228/229 no
+        asegurables) cae en la rama genérica de ``dry_run``: al ser
+        una condición transitoria del datalogger no merece estado
+        propio, pero el motivo queda en los atributos del sensor.
         """
         if self._estado != ESTADO_CONTROL_FALLBACK_BLOQUEADO:
             if not self._control_activo:

@@ -9,6 +9,8 @@ from homeassistant.data_entry_flow import FlowResult
 
 from custom_components.optimizador_bateria_omie.const import (
     CONF_APLICAR_IMPUESTOS_PRECIO,
+    CONF_ARRANQUE_CARGA_RED_SOC,
+    CONF_ARRANQUE_CARGA_RED_V,
     CONF_CAPACIDAD_BATERIA_KWH,
     CONF_CARGO_SISTEMA_LLANO,
     CONF_CARGO_SISTEMA_PUNTA,
@@ -59,6 +61,8 @@ from custom_components.optimizador_bateria_omie.const import (
     CONF_VERIFY_TOLERANCIA,
     CONF_VOLTAJE_BATERIA_NOMINAL,
     DEFAULT_APLICAR_IMPUESTOS_PRECIO,
+    DEFAULT_ARRANQUE_CARGA_RED_SOC,
+    DEFAULT_ARRANQUE_CARGA_RED_V,
     DEFAULT_CAPACIDAD_BATERIA_KWH,
     DEFAULT_CARGO_SISTEMA_LLANO,
     DEFAULT_CARGO_SISTEMA_PUNTA,
@@ -186,6 +190,16 @@ CONFIG_SCHEMA = vol.Schema(
             CONF_POTENCIA_MAX_DESCARGA,
             default=DEFAULT_POTENCIA_MAX_DESCARGA,
         ): vol.All(vol.Coerce(float), vol.Range(min=0, max=10000)),
+        # F5.2: puntos de arranque de la carga desde red (228/229).
+        # Por defecto no bloquean (6100 = 61 V > tensión del banco;
+        # SOC 100), pero 229 debe ser configurable si el datalogger
+        # lo rebota (adenda: bajar a 90).
+        vol.Optional(
+            CONF_ARRANQUE_CARGA_RED_V, default=DEFAULT_ARRANQUE_CARGA_RED_V
+        ): vol.All(vol.Coerce(int), vol.Range(min=0, max=6300)),
+        vol.Optional(
+            CONF_ARRANQUE_CARGA_RED_SOC, default=DEFAULT_ARRANQUE_CARGA_RED_SOC
+        ): vol.All(vol.Coerce(int), vol.Range(min=0, max=100)),
         vol.Optional(
             CONF_POTENCIA_CONTRATADA, default=DEFAULT_POTENCIA_CONTRATADA
         ): vol.All(vol.Coerce(float), vol.Range(min=1000, max=15000)),
