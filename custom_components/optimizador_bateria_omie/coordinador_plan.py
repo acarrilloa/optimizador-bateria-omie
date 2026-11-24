@@ -16,6 +16,7 @@ from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import Event, HomeAssistant, callback
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import (
     async_track_state_change_event,
     async_track_time_change,
@@ -41,6 +42,8 @@ from custom_components.optimizador_bateria_omie.const import (
     NOTIFICACION_ML_ADOPCION,
     NOTIFICACION_ML_REENTRENAMIENTO,
     NOTIFICACION_SIN_PRECIOS_MANANA,
+    SENSOR_ESTADO_CONTROL,
+    SENSOR_FORECAST_QUALITY,
     TRAMOS_POR_DIA,
 )
 from custom_components.optimizador_bateria_omie.coordinador import (
@@ -608,6 +611,18 @@ class CoordinadorPlan:
                 notification_id,
                 err,
             )
+    def _entity_id(self, unique_id: str) -> str:
+        """Resuelve el entity_id real de un unique_id del registry.
+
+        El prefijo del entity_id lo define el nombre del config entry,
+        así que los mensajes al usuario no deben hardcodearlo (D-F6).
+        """
+        registro = er.async_get(self.hass)
+        return (
+            registro.async_get_entity_id_from_unique_id(unique_id)
+            or f"sensor.{unique_id}"
+        )
+
     async def _async_aviso_sin_precios_manana(
         self, precios_manana: list | None, hoy: date
     ) -> None:
@@ -647,11 +662,10 @@ class CoordinadorPlan:
             )
             await self._async_notificar(
                 "Optimizador Batería OMIE: sin precios de mañana",
-                "A las "
                 f"{ahora.strftime('%H:%M')} aún no hay precios de mañana "
                 "en ninguna fuente. El plan nocturno quedará limitado a "
                 "hoy (horizonte incompleto). Revisa "
-                "sensor.inversor_optimizador_bateria_omie_estado_control "
+                f"{self._entity_id(SENSOR_ESTADO_CONTROL)} "
                 "y la integración OMIE; probando acción de nuevo en el "
                 "próximo ciclo de 15 min.",
                 NOTIFICACION_SIN_PRECIOS_MANANA,
@@ -677,8 +691,8 @@ class CoordinadorPlan:
                 "a "
                 + ("ML (ridge)" if adoptado else "el perfil F3")
                 + ". Detalles en "
-                "sensor.inversor_optimizador_bateria_omie_"
-                "forecast_quality.",
+                + self._entity_id(SENSOR_FORECAST_QUALITY)
+                + ".",
                 NOTIFICACION_ML_ADOPCION,
             )
         self._adoptado_previo = adoptado

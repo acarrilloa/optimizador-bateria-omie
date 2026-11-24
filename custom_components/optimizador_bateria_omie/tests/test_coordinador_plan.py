@@ -875,3 +875,43 @@ class TestRespaldoDesviacion0151:
             await coordinador._async_check_cobertura()
 
         recalc.assert_not_awaited()
+
+
+class TestEntityIdAvisos:
+    """D-F6: los avisos citan el entity_id real, sin prefijos fixes."""
+
+    @staticmethod
+    def _registro(entity_id):
+        registro = MagicMock()
+        registro.async_get_entity_id_from_unique_id.return_value = entity_id
+        return registro
+
+    @staticmethod
+    def _patch(registro):
+        return patch(
+            "custom_components.optimizador_bateria_omie.coordinador_plan"
+            ".er.async_get",
+            return_value=registro,
+        )
+
+    def test_resuelve_desde_el_registry(self, coordinador):
+        registro = self._registro("sensor.mi_entry_estado_de_control")
+        with self._patch(registro):
+            resultado = coordinador._entity_id(
+                "optimizador_bateria_omie_estado_control"
+            )
+
+        assert resultado == "sensor.mi_entry_estado_de_control"
+        registro.async_get_entity_id_from_unique_id.assert_called_once_with(
+            "optimizador_bateria_omie_estado_control"
+        )
+
+    def test_fallback_si_no_registrada(self, coordinador):
+        with self._patch(self._registro(None)):
+            resultado = coordinador._entity_id(
+                "optimizador_bateria_omie_estado_control"
+            )
+
+        assert resultado == (
+            "sensor.optimizador_bateria_omie_estado_control"
+        )
