@@ -14,14 +14,26 @@ Modelo por tramo:
 - Guardarraíles absolutos (0.11.0) sobre ``cargar`` (tope de compra) y
   ``exp`` (piso de venta); restricción dura D10 sobre ``imp``.
 - Objetivo: coste neto con compra = venta (§5.6).
+- **Eficiencia en la cadena física (0.15.2)**: el SOC absorbe η por
+  dirección de flujo (√eficiencia_round_trip): cargar 1 kWh deja
+  η kWh en la batería y descargar 1 kWh consume 1/η del SOC. Sin
+  esto el LP veía arbitraje "gratis" en cualquier margen de precio y
+  planeaba cargas en punta para revender al tramo siguiente (una
+  pérdida real del 12 % con rt = 88 %). La exportación también queda
+  tapada físicamente (el 245 del inversor; el executor ya recortaba).
+- **Valor residual de la SOC final (0.15.2)**: sin él, el LP vertía la
+  batería hasta soc_min en los últimos tramos por delantar el fin del
+  horizonte, incluso a precios míseros. Se valora al máximo del
+  horizonte con η de salida (prudente).
 
 Selección en caliente (D-F5.2): ``entry.data["algoritmo_planificador"]``
 = ``greedy`` | ``lp``; si el LP falla, el ``CoordinadorPlan`` recurre
 al greedy — nunca se queda sin plan.
 """
-# versión 0.12.0
+# versión 0.15.2
 
 import logging
+import math
 
 import pulp
 
@@ -108,6 +120,11 @@ class PlanificadorLP:
         energia_h = DELTA_T_H / 1000.0
         cap_wh = self.p.capacidad_bateria_kwh * 1000.0
         k_soc = DELTA_T_H * 100.0 / cap_wh
+        # 0.15.2 — η unidireccional (√rt): el round-trip completo
+        # reproduce la eficiencia configurada. Cargar deja η_c Wh en
+        # batería por cada Wh del nodo; descargar consume 1/η_c.
+        eta_rt = max(self.p.eficiencia_round_trip, 1.0) / 100.0
+        eta_c = math.sqrt(eta_rt)
         fv_max = max(fvs) if fvs else 0.0
         grande = (
             self.p.potencia_contratada
@@ -153,6 +170,11 @@ class PlanificadorLP:
             problema += imp[g] <= (
                 self.p.potencia_contratada - self.p.margen_potencia
             ), f"imp_contratada_{g}"
+            # Cap físico de exportación (0.15.2): el inversor corta a
+            # 5000 W (registro 245) y el executor ya recortaba la
+            # corriente de VENTA_RED — el plan no debe prometer más
+            exp_cap = self.p.potencia_max_descarga
+            problema += exp[g] <= exp_cap, f"exp_cap_{g}"
             # Balance del nodo: entradas = salidas
             # imp + fv + descargabat = consumo + exp + cargabat + curtail
             problema += (
@@ -178,17 +200,34 @@ class PlanificadorLP:
             # Guardarraíl de venta (0.11.0): ni a 0 ni negativos abajo
             if precios[g] < self.p.precio_min_venta:
                 problema += exp[g] == 0, f"exp_piso_{g}"
-            # Cadena de SOC (misma convención que el greedy, sin η:
-            # la eficiencia se aplica en las decisiones económicas)
+            # Cadena de SOC con η unidireccional (0.15.2): antes era
+            # sin pérdidas y el LP arbitrajeaba cualquier margen > 0
+            # (cargas en punta "gratis" para revender al tramo
+            # siguiente). Con rt = 88 %, comprar para vender exige
+            # un margen ≈ 13,6 % — el churn muere solo.
             problema += soc[g + 1] >= self.p.soc_min
             problema += soc[g + 1] <= self.p.soc_max
             problema += (
-                soc[g + 1] == soc[g] + (cargabat[g] - descargabat[g]) * k_soc
+                soc[g + 1]
+                == soc[g]
+                + (eta_c * cargabat[g] - descargabat[g] / eta_c) * k_soc
             ), f"soc_{g}"
 
-        # Objetivo: coste neto del horizonte (§5.6: compra = venta)
+        # Objetivo: coste neto del horizonte (§5.6: compra = venta) con
+        # VALOR RESIDUAL de la SOC final (0.15.2): sin él, el LP
+        # considera gratis tirar la batería hasta soc_min en el último
+        # tramo — vertía todo el horizonte incluso a precios míseros
+        # (0,13 €/kWh en producción) en vez de guardar reserva. Se
+        # valora al máximo del horizonte descontando la η de salida:
+        # un límite superior prudente de lo que esa energía podrá
+        # rendir después del horizonte.
         problema += pulp.lpSum(
             precios[g] * (imp[g] - exp[g]) * energia_h for g in range(n)
+        ) - (
+            (soc[n] / 100.0)
+            * self.p.capacidad_bateria_kwh
+            * eta_c
+            * (max(precios) if precios else 0.0)
         )
 
         estado = problema.solve(pulp.PULP_CBC_CMD(msg=0, timeLimit=30))

@@ -178,3 +178,91 @@ class TestFalloLP:
             _lp().planificar(
                 HOY, _precios_valle_punta(), None, _prediccion(), None, 20.0
             )
+class TestRealismoFisico0152:
+    """0.15.2: η round-trip en la cadena de SOC y cap de exportación.
+
+    Antes la cadena era sin pérdidas: el LP planeaba cargas en punta
+    para revender al tramo siguiente con margen de 0,25 c€/kWh (una
+    pérdida real del 12 % con rt=88) y ventas superiores al corte
+    físico del inversor (245 = 5000 W)."""
+
+    RT = 88.0  # eficiencia_round_trip de ParametrosPlanner por defecto
+
+    def test_micro_margen_no_cicla_bateria(self):
+        """Margen 0,005 €/kWh < coste round-trip (~13,6 %): ninguna
+        carga-para-vender; el plan se queda quieto y ahorra 0."""
+
+        # precios constantes salvo un +0,005 en el tramo 1
+        precios = [0.40] * 96
+        precios[1] = 0.405
+        prediccion = _prediccion(consumo_w=0.0, fv_w=0.0)
+        plan = _lp().planificar(HOY, precios, None, prediccion, None, 50.0)
+
+        assert plan.estado == ESTADO_OK
+        assert plan.coste_con_plan_eur >= plan.coste_sin_plan_eur - 1e-6
+        acciones = {t.accion for t in plan.tramos}
+        assert ACCION_CARGA_RED not in acciones
+        assert ACCION_VENTA_RED not in acciones
+
+    def test_sin_perdidas_ciclar_seria_rentable(self):
+        """Control del test anterior: SIN η el micro-ciclo daba ganancia
+        — verificar que la η aplicada hace el ciclo inviable."""
+        import math
+
+        eta = math.sqrt(self.RT / 100.0)
+        # comprar a 0,40 y revender a eta**2 * 0,405 ≈ 0,356 < 0,40
+        assert (eta ** 2) * 0.405 < 0.40
+
+    def test_soc_previsto_refleja_eta_al_cargar(self):
+        """Cargar 5000 W en un tramo sube el SOC previsto η·(no el 100 %):
+        Δ = 5000·0,25·η / (15360·3600...) en puntos de SOC."""
+        import math
+
+        # valle 8 h, luego punta: el plan carga de madrugada
+        plan = _lp().planificar(
+            HOY, _precios_valle_punta(), None, _prediccion(), None, 20.0
+        )
+        assert plan.estado == ESTADO_OK
+        eta = math.sqrt(self.RT / 100.0)
+        subidas = [
+            plan.tramos[i + 1].soc_previsto_pct
+            - plan.tramos[i].soc_previsto_pct
+            for i in range(len(plan.tramos) - 1)
+            if plan.tramos[i].accion == ACCION_CARGA_RED
+        ]
+        # toda subida por tramo de carga a tope debe ser ≤ η·máximo
+        delta_max = 5000.0 * 0.25 * eta / (15.36 * 1000.0) * 100.0
+        assert subidas
+        assert max(subidas) <= delta_max + 0.02  # tolerancia redondeo
+
+    def test_exportacion_tapada_alInversor(self):
+        """FV 8000 W con consumo 0: exportación planificada ≤ 5000 W
+        (el 245 físico; el resto se recorta/curtail)."""
+        prediccion = _prediccion(consumo_w=0.0, fv_w=8000.0)
+        plan = _lp().planificar(
+            HOY, _precios_valle_punta(), None, prediccion, None, 50.0
+        )
+
+        assert plan.estado == ESTADO_OK
+        ventas = [
+            t.potencia_venta_red_w
+            for t in plan.tramos
+            if t.accion == ACCION_VENTA_RED
+        ]
+        assert ventas  # hay venta de excedente
+        assert max(ventas) <= 5000.0 + 1e-6
+
+    def test_valor_residual_evita_vertido_al_final(self):
+        """0.15.2: sin valor residual, el LP vercía la batería hasta
+        soc_min en los últimos tramos por delantar el fin del
+        horizonte, aunque el precio fuese mísero."""
+        precios = [0.13] * 96
+        precios[70] = 0.30  # pico aislado
+        prediccion = _prediccion(consumo_w=0.0, fv_w=0.0)
+        plan = _lp().planificar(HOY, precios, None, prediccion, None, 50.0)
+
+        assert plan.estado == ESTADO_OK
+        # El pico de 0,30 se aprovecha; el resto de la reserva NO se
+        # vierte a 0,13 (residual η·0,30 ≈ 0,28 > 0,13 de venta)
+        final = plan.tramos[-1].soc_previsto_pct
+        assert final > 30.0
