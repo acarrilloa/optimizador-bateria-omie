@@ -65,6 +65,19 @@ CONF_POTENCIA_MAX_DESCARGA = "potencia_max_descarga"
 # para cero churn (adenda F5.2).
 CONF_ARRANQUE_CARGA_RED_SOC = "arranque_carga_red_soc"
 CONF_ARRANQUE_CARGA_RED_V = "arranque_carga_red_v"
+# F6/A (24-nov-2026): tabla ToU del "Programa 1" como actuador real.
+# Con 248=1 (auto-restaurado por firmware) los amperajes solos
+# producen "float": la energía por batería la gobierna la tabla
+# 250-279. `actuador_tou` a False conserva el esquema v0.14.x.
+CONF_ACTUADOR_TOU = "actuador_tou"
+CONF_SOC_STOP_CARGA_DEFAULT = "soc_stop_carga_default"
+CONF_MAX_TABLAS_TOU_HORA = "max_tablas_tou_hora"
+CONF_DESCARGA_MINIMA_BACKUP_A = "descarga_minima_backup_a"
+# F6/B (24-nov-2026): check de cobertura periódico (caso de uso U1):
+# si el SOC real más el FV previsto no cubren el consumo hasta el
+# próximo tramo CARGA_RED del plan, replan inmediato.
+CONF_MARGEN_COBERTURA_WH = "margen_cobertura_wh"
+CONF_FACTOR_RITMO = "factor_ritmo_descarga"
 CONF_POTENCIA_CONTRATADA = "potencia_contratada"
 CONF_MARGEN_POTENCIA = "margen_potencia"
 CONF_EFICIENCIA_ROUND_TRIP = "eficiencia_round_trip"
@@ -111,6 +124,23 @@ DEFAULT_ARRANQUE_CARGA_RED_SOC = 100
 # 61,00 V > tensión máxima del banco (≈53 V): la condición de arranque
 # por voltaje (228) queda siempre satisfecha; la llave real es 232.
 DEFAULT_ARRANQUE_CARGA_RED_V = 6100
+# F6/A: flags ToU observados (5=carga, 4=venta, 0=segmento inactivo).
+TOU_FLAG_INACTIVO = 0
+TOU_FLAG_VENTA = 4
+TOU_FLAG_CARGA = 5
+# Volt-stop observado en la tabla que cargó a 4-5 kW (49,00 V);
+# se replica en los puntos activos hasta pasar D2 de calibración.
+TOU_VSTOP_DEFAULT = 4900
+DEFAULT_ACTUADOR_TOU = True
+# None = sin configurar → cae a soc_max del entry (D14/0.15.0)
+DEFAULT_SOC_STOP_CARGA_DEFAULT = None
+DEFAULT_MAX_TABLAS_TOU_HORA = 2
+# 0 = receta D1 pura (211=0 durante CARGA); si D1 confirma que la
+# carga funciona igual con 211≠0, subir da respaldo ante corte de red
+DEFAULT_DESCARGA_MINIMA_BACKUP_A = 0
+# F6/B: margen de cobertura (None = 20 % de capacidad_bateria_kwh)
+DEFAULT_MARGEN_COBERTURA_WH = None
+DEFAULT_FACTOR_RITMO = 1.3
 DEFAULT_POTENCIA_CONTRATADA = 5750.0
 DEFAULT_MARGEN_POTENCIA = 300.0
 DEFAULT_EFICIENCIA_ROUND_TRIP = 88  # % (entero: el validador exige int)

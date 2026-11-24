@@ -59,7 +59,13 @@
           "iva_pct": "IVA (%)",
           "aplicar_impuestos_precio": "Aplicar impuestos al precio",
           "arranque_carga_red_v": "Arranque de carga: voltaje (centésimas de V)",
-          "arranque_carga_red_soc": "Arranque de carga: SOC (%)"
+          "arranque_carga_red_soc": "Arranque de carga: SOC (%)",
+          "actuador_tou": "Actuador ToU (tabla del Programa 1)",
+          "soc_stop_carga_default": "SOC-stop del segmento de carga (%; vacío = SOC máximo)",
+          "max_tablas_tou_hora": "Máximo de escrituras de tabla ToU por hora",
+          "descarga_minima_backup_a": "Descarga mínima de respaldo durante carga (A; 0 = receta D1)",
+          "margen_cobertura_wh": "Margen de cobertura de batería (Wh; vacío = 20 % de la capacidad)",
+          "factor_ritmo_descarga": "Factor de ritmo de consumo para replanificar (×)"
         }
       },
       "reconfigure": {
@@ -118,7 +124,13 @@
           "iva_pct": "IVA (%)",
           "aplicar_impuestos_precio": "Aplicar impuestos al precio",
           "arranque_carga_red_v": "Arranque de carga: voltaje (centésimas de V)",
-          "arranque_carga_red_soc": "Arranque de carga: SOC (%)"
+          "arranque_carga_red_soc": "Arranque de carga: SOC (%)",
+          "actuador_tou": "Actuador ToU (tabla del Programa 1)",
+          "soc_stop_carga_default": "SOC-stop del segmento de carga (%; vacío = SOC máximo)",
+          "max_tablas_tou_hora": "Máximo de escrituras de tabla ToU por hora",
+          "descarga_minima_backup_a": "Descarga mínima de respaldo durante carga (A; 0 = receta D1)",
+          "margen_cobertura_wh": "Margen de cobertura de batería (Wh; vacío = 20 % de la capacidad)",
+          "factor_ritmo_descarga": "Factor de ritmo de consumo para replanificar (×)"
         }
       }
     },

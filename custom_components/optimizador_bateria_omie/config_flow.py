@@ -8,6 +8,7 @@ from homeassistant.config_entries import ConfigFlow
 from homeassistant.data_entry_flow import FlowResult
 
 from custom_components.optimizador_bateria_omie.const import (
+    CONF_ACTUADOR_TOU,
     CONF_APLICAR_IMPUESTOS_PRECIO,
     CONF_ARRANQUE_CARGA_RED_SOC,
     CONF_ARRANQUE_CARGA_RED_V,
@@ -15,6 +16,7 @@ from custom_components.optimizador_bateria_omie.const import (
     CONF_CARGO_SISTEMA_LLANO,
     CONF_CARGO_SISTEMA_PUNTA,
     CONF_CARGO_SISTEMA_VALLE,
+    CONF_DESCARGA_MINIMA_BACKUP_A,
     CONF_DESVIACION_SOC_REPLAN,
     CONF_DEVICE_ID_SOLARMAN,
     CONF_EFICIENCIA_ROUND_TRIP,
@@ -31,6 +33,7 @@ from custom_components.optimizador_bateria_omie.const import (
     CONF_ENTITY_ID_TEMP_HISTORICO,
     CONF_ENTITY_ID_TEMP_INVERSOR,
     CONF_ENTITY_IDS_FALLO,
+    CONF_FACTOR_RITMO,
     CONF_FESTIVOS_LOCALES,
     CONF_IMPUESTO_ELECTRICO_PCT,
     CONF_INTERVALO_TELEMETRIA,
@@ -38,8 +41,10 @@ from custom_components.optimizador_bateria_omie.const import (
     CONF_IVA_PCT,
     CONF_LATENCIA_VERIFY_S,
     CONF_MARGEN_ARBITRAJE,
+    CONF_MARGEN_COBERTURA_WH,
     CONF_MARGEN_POTENCIA,
     CONF_MAX_ESCRITURAS_HORA,
+    CONF_MAX_TABLAS_TOU_HORA,
     CONF_MODO_ACTIVACION,
     CONF_PEAYE_ACCESO_LLANO,
     CONF_PEAYE_ACCESO_PUNTA,
@@ -56,10 +61,12 @@ from custom_components.optimizador_bateria_omie.const import (
     CONF_SOC_MAX,
     CONF_SOC_MIN,
     CONF_SOC_RECUPERACION,
+    CONF_SOC_STOP_CARGA_DEFAULT,
     CONF_TELEMETRY_SOURCE,
     CONF_VENTANA_HISTORICO,
     CONF_VERIFY_TOLERANCIA,
     CONF_VOLTAJE_BATERIA_NOMINAL,
+    DEFAULT_ACTUADOR_TOU,
     DEFAULT_APLICAR_IMPUESTOS_PRECIO,
     DEFAULT_ARRANQUE_CARGA_RED_SOC,
     DEFAULT_ARRANQUE_CARGA_RED_V,
@@ -67,12 +74,14 @@ from custom_components.optimizador_bateria_omie.const import (
     DEFAULT_CARGO_SISTEMA_LLANO,
     DEFAULT_CARGO_SISTEMA_PUNTA,
     DEFAULT_CARGO_SISTEMA_VALLE,
+    DEFAULT_DESCARGA_MINIMA_BACKUP_A,
     DEFAULT_DESVIACION_SOC_REPLAN,
     DEFAULT_DIAS_CACHE,
     DEFAULT_EFICIENCIA_ROUND_TRIP,
     DEFAULT_ENTITY_ID_CORRIENTE_BATERIA,
     DEFAULT_ENTITY_ID_PREVISION_FV_HOY,
     DEFAULT_ENTITY_ID_PREVISION_FV_MANANA,
+    DEFAULT_FACTOR_RITMO,
     DEFAULT_FUENTE_PRIORITARIA,
     DEFAULT_IMPUESTO_ELECTRICO_PCT,
     DEFAULT_INTERVALO_TELEMETRIA,
@@ -82,6 +91,7 @@ from custom_components.optimizador_bateria_omie.const import (
     DEFAULT_MARGEN_ARBITRAJE,
     DEFAULT_MARGEN_POTENCIA,
     DEFAULT_MAX_ESCRITURAS_HORA,
+    DEFAULT_MAX_TABLAS_TOU_HORA,
     DEFAULT_MODO_ACTIVACION,
     DEFAULT_PEAYE_ACCESO_LLANO,
     DEFAULT_PEAYE_ACCESO_PUNTA,
@@ -200,6 +210,34 @@ CONFIG_SCHEMA = vol.Schema(
         vol.Optional(
             CONF_ARRANQUE_CARGA_RED_SOC, default=DEFAULT_ARRANQUE_CARGA_RED_SOC
         ): vol.All(vol.Coerce(int), vol.Range(min=0, max=100)),
+        # F6/A (24-nov-2026): tabla ToU del Programa 1 como actuador.
+        # Con 248=1 los amperajes solos producen "float": la energía
+        # por batería la gobierna la tabla 250-279. False conserva el
+        # esquema v0.14.x.
+        vol.Optional(
+            CONF_ACTUADOR_TOU, default=DEFAULT_ACTUADOR_TOU
+        ): bool,
+        # SOC-stop del segmento de carga (vacío = soc_max)
+        vol.Optional(CONF_SOC_STOP_CARGA_DEFAULT): vol.All(
+            vol.Coerce(int), vol.Range(min=10, max=100)
+        ),
+        vol.Optional(
+            CONF_MAX_TABLAS_TOU_HORA, default=DEFAULT_MAX_TABLAS_TOU_HORA
+        ): vol.All(vol.Coerce(int), vol.Range(min=1, max=6)),
+        # Respaldo de descarga durante CARGA (receta D1: 0). Si D1
+        # confirma que la carga funciona igual con 211≠0, subir da
+        # respaldo ante corte nocturno de red
+        vol.Optional(
+            CONF_DESCARGA_MINIMA_BACKUP_A,
+            default=DEFAULT_DESCARGA_MINIMA_BACKUP_A,
+        ): vol.All(vol.Coerce(int), vol.Range(min=0, max=135)),
+        # F6/B: check de cobertura U1 (vacío = 20 % de la capacidad)
+        vol.Optional(CONF_MARGEN_COBERTURA_WH): vol.All(
+            vol.Coerce(float), vol.Range(min=0)
+        ),
+        vol.Optional(
+            CONF_FACTOR_RITMO, default=DEFAULT_FACTOR_RITMO
+        ): vol.All(vol.Coerce(float), vol.Range(min=1.1, max=3.0)),
         vol.Optional(
             CONF_POTENCIA_CONTRATADA, default=DEFAULT_POTENCIA_CONTRATADA
         ): vol.All(vol.Coerce(float), vol.Range(min=1000, max=15000)),

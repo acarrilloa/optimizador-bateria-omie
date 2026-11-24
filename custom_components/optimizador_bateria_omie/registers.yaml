@@ -50,3 +50,44 @@ familias:
       max_exportacion_red:    { addr: 245, scale: 1, unit: "W", min: 0, max: 8000 }
       soc_minimo:           { addr: 217, scale: 1, unit: "%", min: 10, max: 100 }
       soc_recuperacion:     { addr: 218, scale: 1, unit: "%", min: 10, max: 100 }
+      # ── F6/A (24-nov-2026): tabla ToU como actuador (Programa 1) ──
+      # Con 248=1 (auto-restaurado por firmware: NO escribir jamás) el inversor
+      # SOLO mueve energía por la batería según los segmentos de esta tabla; los
+      # amperajes solos producen el "float" crónico. 249 (day-bits) TAMBIÉN queda
+      # prohibido: day-bits escritos = venta autónoma. Solo se escribe 250-279.
+      # Formato verificado en producción (lectura 24-nov con carga a 4-5 kW):
+      #   250-255 puntos horarios 1-6, HHMM decimal (0 = inactivo)
+      #   256-261 potencia por punto (W), 262-267 volt-stop (0.01 V, 4900 visto)
+      #   268-273 SOC-stop por punto (%), 274-279 flags (5=carga, 4=venta, 0=inactivo)
+      # Los atributos del punto i describen el segmento [i, i+1); punto 2 del
+      # segmento es solo el marcador de fin (sus campos van a 0).
+      tou_hora_1:      { addr: 250, scale: 1, unit: "HHMM", min: 0, max: 2359 }
+      tou_hora_2:      { addr: 251, scale: 1, unit: "HHMM", min: 0, max: 2359 }
+      tou_hora_3:      { addr: 252, scale: 1, unit: "HHMM", min: 0, max: 2359 }
+      tou_hora_4:      { addr: 253, scale: 1, unit: "HHMM", min: 0, max: 2359 }
+      tou_hora_5:      { addr: 254, scale: 1, unit: "HHMM", min: 0, max: 2359 }
+      tou_hora_6:      { addr: 255, scale: 1, unit: "HHMM", min: 0, max: 2359 }
+      tou_potencia_1:  { addr: 256, scale: 1, unit: "W", min: 0, max: 8000 }
+      tou_potencia_2:  { addr: 257, scale: 1, unit: "W", min: 0, max: 8000 }
+      tou_potencia_3:  { addr: 258, scale: 1, unit: "W", min: 0, max: 8000 }
+      tou_potencia_4:  { addr: 259, scale: 1, unit: "W", min: 0, max: 8000 }
+      tou_potencia_5:  { addr: 260, scale: 1, unit: "W", min: 0, max: 8000 }
+      tou_potencia_6:  { addr: 261, scale: 1, unit: "W", min: 0, max: 8000 }
+      tou_vstop_1:     { addr: 262, scale: 1, unit: "0.01V", min: 0, max: 6300 }
+      tou_vstop_2:     { addr: 263, scale: 1, unit: "0.01V", min: 0, max: 6300 }
+      tou_vstop_3:     { addr: 264, scale: 1, unit: "0.01V", min: 0, max: 6300 }
+      tou_vstop_4:     { addr: 265, scale: 1, unit: "0.01V", min: 0, max: 6300 }
+      tou_vstop_5:     { addr: 266, scale: 1, unit: "0.01V", min: 0, max: 6300 }
+      tou_vstop_6:     { addr: 267, scale: 1, unit: "0.01V", min: 0, max: 6300 }
+      tou_soc_stop_1:  { addr: 268, scale: 1, unit: "%", min: 0, max: 100 }
+      tou_soc_stop_2:  { addr: 269, scale: 1, unit: "%", min: 0, max: 100 }
+      tou_soc_stop_3:  { addr: 270, scale: 1, unit: "%", min: 0, max: 100 }
+      tou_soc_stop_4:  { addr: 271, scale: 1, unit: "%", min: 0, max: 100 }
+      tou_soc_stop_5:  { addr: 272, scale: 1, unit: "%", min: 0, max: 100 }
+      tou_soc_stop_6:  { addr: 273, scale: 1, unit: "%", min: 0, max: 100 }
+      tou_flag_1:      { addr: 274, scale: 1, unit: "flag", min: 0, max: 5 }
+      tou_flag_2:      { addr: 275, scale: 1, unit: "flag", min: 0, max: 5 }
+      tou_flag_3:      { addr: 276, scale: 1, unit: "flag", min: 0, max: 5 }
+      tou_flag_4:      { addr: 277, scale: 1, unit: "flag", min: 0, max: 5 }
+      tou_flag_5:      { addr: 278, scale: 1, unit: "flag", min: 0, max: 5 }
+      tou_flag_6:      { addr: 279, scale: 1, unit: "flag", min: 0, max: 5 }

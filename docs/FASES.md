@@ -13,6 +13,7 @@ Fuente única de verdad: `SPEC.md`. Este fichero resume el estado y los criterio
 | F5.3 — Estabilidad del plan y watchdog | 0.13.0 | ✅ implementada | Bloque de compromiso (D-F5.3.1), plan no derribado por gaps de telemetría, watchdog 4× con debounce y timeout de 600 s, estados `gradual`/`sin_telemetria`. Medición de 48 h pendiente del usuario |
 | F6 — Pulido (dashboard, notificaciones, informes) | 0.13.1–0.14.1 | ✅ implementada | Hotfix incidente ×1000 (regex+sanity), avisos persistentes de datos, dashboard YAML de 3 vistas, servicio `resumen_diario`. **Criterio de salida: 30 días sin intervención** |
 | F5.2 — Saneo de arranque 228/229 y cap 245 | 0.14.5 | ✅ implementada | Incidente 21-nov-2026: el AND de arranque (228=49 V) congelaba las cargas; rearme por tramo con cooldown 1 h/regístro y cap de venta al 245 real. Evidencia: `docs/f5_2/` |
+| F6/A+B — ToU como actuador + cobertura U1 | 0.15.0 | ✅ implementada | 248 auto-restaurado por firmware: la energía la gobierna la tabla 250-279 (nunca 244-249). Vigilante v2 con reparación 1/h. Check de cobertura cada 30 min (replan inmediato `cobertura_insuficiente`) + ritmo de consumo + bug 2 (entidad SOC verificada). Evidencia: `docs/f6/`. **Calibraciones físicas D1-D4 pendientes del usuario** |
 
 ## Pendientes del usuario
 

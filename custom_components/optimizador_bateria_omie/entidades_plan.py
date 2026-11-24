@@ -202,6 +202,11 @@ class SensorPlan(EntidadBasePlan):
         atributos["proximo_replan"] = (
             self._coordinador.proximo_limite_bloque().strftime("%H:%M")
         )
+        # F6/B (bug 2): visible si la replanificación por desviación de
+        # SOC quedó viva (entity_id verificado en el arranque)
+        atributos["replan_soc_activo"] = (
+            self._coordinador.replan_soc_activo
+        )
         if tramo is not None:
             atributos["tramo_actual"] = tramo.hora
             atributos["soc_previsto_pct"] = tramo.soc_previsto_pct

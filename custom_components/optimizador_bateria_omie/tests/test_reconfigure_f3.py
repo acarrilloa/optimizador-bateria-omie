@@ -294,3 +294,43 @@ class TestReconfigureF4:
 
         sugeridos = flow.add_suggested_values_to_schema.call_args[0][1]
         assert sugeridos["entity_ids_fallo"] == "sensor.f1"
+class TestSchemaF6:
+    """F6: actuador ToU y cobertura U1."""
+
+    def test_defaults_actuador_tou(self):
+        """actuador_tou on por defecto; tabla configurada."""
+        datos = CONFIG_SCHEMA(dict(ENTRADA_F2))
+        assert datos["actuador_tou"] is True
+        assert datos["max_tablas_tou_hora"] == 2
+        assert datos["descarga_minima_backup_a"] == 0
+        assert datos["factor_ritmo_descarga"] == 1.3
+        # Sin default: caen al fallback del executor (soc_max / 20 %)
+        assert "soc_stop_carga_default" not in datos
+        assert "margen_cobertura_wh" not in datos
+
+    def test_rangos_validados_f6(self):
+        with pytest.raises(vol.Invalid):
+            CONFIG_SCHEMA({**ENTRADA_F2, "max_tablas_tou_hora": 0})
+        with pytest.raises(vol.Invalid):
+            CONFIG_SCHEMA({**ENTRADA_F2, "soc_stop_carga_default": 101})
+        with pytest.raises(vol.Invalid):
+            CONFIG_SCHEMA({**ENTRADA_F2, "descarga_minima_backup_a": -5})
+        with pytest.raises(vol.Invalid):
+            CONFIG_SCHEMA({**ENTRADA_F2, "factor_ritmo_descarga": 1.0})
+        with pytest.raises(vol.Invalid):
+            CONFIG_SCHEMA({**ENTRADA_F2, "margen_cobertura_wh": -1})
+
+    def test_valores_explicitos_aceptados(self):
+        datos = CONFIG_SCHEMA(
+            {
+                **ENTRADA_F2,
+                "actuador_tou": False,
+                "soc_stop_carga_default": 90,
+                "descarga_minima_backup_a": 30,
+                "margen_cobertura_wh": 5000,
+            }
+        )
+        assert datos["actuador_tou"] is False
+        assert datos["soc_stop_carga_default"] == 90
+        assert datos["descarga_minima_backup_a"] == 30
+        assert datos["margen_cobertura_wh"] == 5000.0

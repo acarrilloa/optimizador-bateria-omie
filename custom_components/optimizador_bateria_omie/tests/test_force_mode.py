@@ -82,7 +82,9 @@ def _sin_espera_verify():
 def executor(hass, mapa, escritor):
     """Executor con tramo del plan = MANTENER y período valle."""
     entry = MagicMock()
-    entry.data = {}
+    # F6/A: los tests de force-mode conservan el esquema v0.14.x
+    # (sin tabla ToU); la tabla tiene cobertura propia en test_executor
+    entry.data = {"actuador_tou": False}
     coordinador = MagicMock()
     coordinador.tramo_actual = MagicMock(return_value=_tramo(ACCION_MANTENER))
     coordinador.data = TelemetriaInversor(

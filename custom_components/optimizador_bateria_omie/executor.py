@@ -22,7 +22,7 @@ jitter de Solarman ya no derriba el estado); las escrituras se cortan
 desde la PRIMERA observación y el fallback solo llega tras 600 s de
 caída continuada con carga activa.
 """
-# versión 0.14.5
+# versión 0.15.0
 
 import asyncio
 import logging
@@ -33,34 +33,45 @@ from typing import Any
 
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers.event import async_track_time_change
 
 from custom_components.optimizador_bateria_omie.const import (
     ACCIONES_MANUALES,
+    CONF_ACTUADOR_TOU,
     CONF_ARRANQUE_CARGA_RED_SOC,
     CONF_ARRANQUE_CARGA_RED_V,
+    CONF_DESCARGA_MINIMA_BACKUP_A,
     CONF_DEVICE_ID_SOLARMAN,
     CONF_ENTITY_ID_POTENCIA_RED,
     CONF_ENTITY_IDS_FALLO,
     CONF_LATENCIA_VERIFY_S,
     CONF_MAX_ESCRITURAS_HORA,
+    CONF_MAX_TABLAS_TOU_HORA,
     CONF_MODO_ACTIVACION,
     CONF_POTENCIA_CONTRATADA,
     CONF_POTENCIA_MAX_CARGA,
     CONF_POTENCIA_MAX_DESCARGA,
+    CONF_SOC_MAX,
     CONF_SOC_MIN,
     CONF_SOC_RECUPERACION,
+    CONF_SOC_STOP_CARGA_DEFAULT,
     CONF_VERIFY_TOLERANCIA,
     CONF_VOLTAJE_BATERIA_NOMINAL,
     DEBOUNCE_TELEMETRIA,
+    DEFAULT_ACTUADOR_TOU,
     DEFAULT_ARRANQUE_CARGA_RED_SOC,
     DEFAULT_ARRANQUE_CARGA_RED_V,
+    DEFAULT_DESCARGA_MINIMA_BACKUP_A,
     DEFAULT_DEVICE_ID_SOLARMAN,
     DEFAULT_LATENCIA_VERIFY_S,
     DEFAULT_MAX_ESCRITURAS_HORA,
+    DEFAULT_MAX_TABLAS_TOU_HORA,
     DEFAULT_MODO_ACTIVACION,
     DEFAULT_POTENCIA_MAX_DESCARGA,
+    DEFAULT_SOC_MAX,
     DEFAULT_SOC_MIN,
     DEFAULT_SOC_RECUPERACION,
+    DEFAULT_SOC_STOP_CARGA_DEFAULT,
     DEFAULT_VERIFY_TOLERANCIA,
     DEFAULT_VOLTAJE_BATERIA_NOMINAL,
     DOMAIN,
@@ -75,6 +86,9 @@ from custom_components.optimizador_bateria_omie.const import (
     GUARD_REDUCCION,
     MULTIPLICADOR_WATCHDOG,
     TIMEOUT_TELEMETRIA_S,
+    TOU_FLAG_CARGA,
+    TOU_FLAG_VENTA,
+    TOU_VSTOP_DEFAULT,
 )
 from custom_components.optimizador_bateria_omie.const import (
     MODO_ACTIVACION_COMPLETO as COMPLETO,
@@ -133,6 +147,11 @@ SERVICIO_TIMEOUT_S = 15.0
 # aunque siga derivando (el 229 reaparece en 90 poco después de
 # escribirlo; la carga funciona igual mientras SOC < objetivo).
 REARME_ARRANQUE_COOLDOWN_S = 3600.0
+# Vigilante ToU v2 (F6/A): cooldown de las reparaciones preventivas
+# de la tabla (la nube Solarman la pisó una vez: borrado de 250-279
+# el 22-nov-2026). Un ciclo por hora es suficiente porque la tabla
+# también se reescribe en cada tramo aplicado si deriva.
+VIGILANTE_TOU_COOLDOWN_S = 3600.0
 
 
 class ErrorEscrituraSolarman(Exception):
@@ -362,6 +381,12 @@ class EjecutorControl:
         self._max_exportacion_w: int | None = None
         self._max_exportacion_ts: datetime | None = None
         self._ts_rearme: dict[int, datetime] = {}
+        # F6/A: tabla ToU como actuador
+        self._tabla_tou_aplicada: dict[int, int] | None = None
+        self._tabla_tou_objetivo: dict[int, int] | None = None
+        self._tablas_ts: list[datetime] = []
+        self._ts_vigilante: datetime | None = None
+        self._cancelar_vigilante: Callable[[], None] | None = None
         self._fallos_consecutivos = 0
         self._aviso_fallo_emitido = False
         self._listeners: list[Callable[[], None]] = []
@@ -393,6 +418,15 @@ class EjecutorControl:
                 self._async_plan_cambiado
             )
         )
+        # Vigilante ToU v2 (F6/A): en cada cambio de tramo, releer la
+        # tabla del inversor y repararla si la nube/gateway la pisó
+        if self._actuador_tou():
+            self._cancelar_vigilante = async_track_time_change(
+                self.hass,
+                self._async_vigilante_tou,
+                minute=range(0, 60, 15),
+                second=0,
+            )
         await self.async_aplicar_tramo("arranque")
 
     def _async_plan_cambiado(self) -> None:
@@ -404,6 +438,9 @@ class EjecutorControl:
         if self._cancelar_plan is not None:
             self._cancelar_plan()
             self._cancelar_plan = None
+        if self._cancelar_vigilante is not None:
+            self._cancelar_vigilante()
+            self._cancelar_vigilante = None
         self._listeners.clear()
 
     # ─── Parámetros ───
@@ -482,11 +519,27 @@ class EjecutorControl:
             corriente = self._recortar_corriente(
                 "corriente_carga_red", tramo.potencia_carga_red_w / voltaje
             )
-            return {
+            objetivos = {
                 addr_carga: limite_carga,
                 addr_red: corriente,
                 addr_habilitar: 1,
             }
+            # F6/A: receta D1 confirmada como default (230=corriente,
+            # 211=0): sin descarga programada durante la carga. El
+            # parámetro opcional `descarga_minima_backup_a` (>0) da
+            # respaldo ante corte nocturno de red si D1 demuestra que
+            # la carga a plena potencia funciona igual con 211≠0.
+            if self._actuador_tou():
+                backup = int(
+                    self._param(
+                        CONF_DESCARGA_MINIMA_BACKUP_A,
+                        DEFAULT_DESCARGA_MINIMA_BACKUP_A,
+                    )
+                )
+                objetivos[addr_descarga] = self._recortar_corriente(
+                    "corriente_descarga", backup
+                )
+            return objetivos
         if tramo.accion == ACCION_VENTA_RED:
             corriente = self._recortar_corriente(
                 "corriente_descarga",
@@ -645,6 +698,387 @@ class EjecutorControl:
                 "Límite de exportación a red (245): %d W", leido
             )
         self._max_exportacion_ts = ahora
+
+    # ─── F6/A: tabla ToU como actuador (24-nov-2026) ───
+
+    def _actuador_tou(self) -> bool:
+        """Modo actuador ToU (True) o esquema v0.14.x (False)."""
+        return bool(
+            self._param(CONF_ACTUADOR_TOU, DEFAULT_ACTUADOR_TOU)
+        )
+
+    def _direcciones_tabla_tou(self) -> list[int]:
+        """Direcciones de la tabla 250-279, ordenadas por campo y punto."""
+        return [
+            self.mapa.direccion("estandar", f"tou_{campo}_{i}", "control")
+            for campo in ("hora", "potencia", "vstop", "soc_stop", "flag")
+            for i in range(1, 7)
+        ]
+
+    def _clamp_tou(self, funcion: str, valor: int) -> int:
+        """Valor recortado a los límites del YAML (igual que D3)."""
+        minimo, maximo = self._limites(funcion)
+        return int(min(max(valor, minimo), maximo))
+
+    def _soc_stop_carga(self) -> int:
+        """SOC-stop del segmento de carga (config o soc_max)."""
+        parado = self._param(
+            CONF_SOC_STOP_CARGA_DEFAULT, DEFAULT_SOC_STOP_CARGA_DEFAULT
+        )
+        if parado is None:
+            parado = self._param(CONF_SOC_MAX, DEFAULT_SOC_MAX)
+        return int(min(max(float(parado), 1), 100))
+
+    def _segmento_tou(
+        self,
+        tramo: PlanTramo,
+        hasta_manual: str | None = None,
+    ) -> dict[str, int] | None:
+        """Atributos del segmento ToU de la acción del tramo (o None).
+
+        El segmento abarca el **run completo** de tramos consecutivos
+        con la misma acción alrededor del actual (con la potencia
+        máxima del run: la corriente fina la modula el 230/211 en cada
+        tramo, la tabla solo delimita la ventana). En modo manual la
+        ventana es [ahora, hasta]. Fuera de medianoche: el fin se
+        recorta a 23:59 (HHMM no admite 2400 y un cruce de día en un
+        solo Programa 1 es ambiguo).
+        """
+        if tramo.accion not in (ACCION_CARGA_RED, ACCION_VENTA_RED):
+            return None
+        es_carga = tramo.accion == ACCION_CARGA_RED
+        flag = TOU_FLAG_CARGA if es_carga else TOU_FLAG_VENTA
+        soc_stop = (
+            self._soc_stop_carga()
+            if es_carga
+            else int(float(self._param(CONF_SOC_MIN, DEFAULT_SOC_MIN)))
+        )
+        if hasta_manual is not None:
+            ahora = datetime.now().astimezone()
+            final = datetime.fromisoformat(hasta_manual)
+            hora_inicio = ahora.hour * 100 + ahora.minute
+            hora_fin = final.hour * 100 + final.minute
+            potencia = (
+                tramo.potencia_carga_red_w
+                if es_carga
+                else abs(tramo.potencia_venta_red_w)
+            )
+            return {
+                "hora_inicio": hora_inicio,
+                "hora_fin": hora_fin,
+                "potencia": int(max(potencia, 0.0)),
+                "soc_stop": soc_stop,
+                "flag": flag,
+            }
+        run = [tramo]
+        plan = self.coordinador_plan.plan
+        tramos = getattr(plan, "tramos", None)
+        if isinstance(tramos, list) and tramos:
+            posicion = next(
+                (
+                    i
+                    for i, t in enumerate(tramos)
+                    if t.fecha == tramo.fecha and t.tramo == tramo.tramo
+                ),
+                None,
+            )
+            if posicion is not None:
+                # Extender el run solo dentro del mismo día: un run que
+                # cruza medianoche genera hora_fin inválida (< inicio)
+                atras = posicion
+                while atras > 0 and (
+                    tramos[atras - 1].fecha == tramo.fecha
+                    and tramos[atras - 1].accion == tramo.accion
+                ):
+                    atras -= 1
+                adelante = posicion
+                while adelante + 1 < len(tramos) and (
+                    tramos[adelante + 1].fecha == tramo.fecha
+                    and tramos[adelante + 1].accion == tramo.accion
+                ):
+                    adelante += 1
+                run = tramos[atras : adelante + 1]
+        primer_hhmm = run[0].hora.split(":")
+        final_idx = run[-1].tramo
+        fin_min = min(final_idx * 15 + 15, 1439)  # no cruza medianoche
+        potencias = [
+            t.potencia_carga_red_w if es_carga else abs(t.potencia_venta_red_w)
+            for t in run
+        ]
+        return {
+            "hora_inicio": int(primer_hhmm[0]) * 100 + int(primer_hhmm[1]),
+            "hora_fin": (fin_min // 60) * 100 + (fin_min % 60),
+            "potencia": int(max(max(potencias), 0.0)),
+            "soc_stop": soc_stop,
+            "flag": flag,
+        }
+
+    def _objetivos_tabla_tou(
+        self,
+        tramo: PlanTramo,
+        hasta_manual: str | None = None,
+    ) -> dict[int, int]:
+        """Tabla 250-279 objetivo del tramo (24 registros, YAML).
+
+        Usa el punto 1 (con el punto 2 como marcador de fin; sus
+        campos van a 0) y deja el resto de puntos desactivados: si la
+        nube o el ToU propio del inversor dejasen segmentos residuales
+        de venta, se limpian. CARGA_RED/VENTA_RED → segmento 1;
+        AUTOCONSUMO/MANTENER → tabla vacía (float deseado).
+        """
+        direcciones = self._direcciones_tabla_tou()
+        tabla = {addr: 0 for addr in direcciones}
+        segmento = self._segmento_tou(tramo, hasta_manual)
+        if segmento is None:
+            return tabla
+        tabla[direcciones[0]] = self._clamp_tou(
+            "tou_hora_1", segmento["hora_inicio"]
+        )
+        tabla[direcciones[1]] = self._clamp_tou(
+            "tou_hora_2", segmento["hora_fin"]
+        )
+        tabla[direcciones[6]] = self._clamp_tou(
+            "tou_potencia_1", segmento["potencia"]
+        )
+        tabla[direcciones[12]] = TOU_VSTOP_DEFAULT  # observado funcionando
+        tabla[direcciones[18]] = self._clamp_tou(
+            "tou_soc_stop_1", segmento["soc_stop"]
+        )
+        tabla[direcciones[24]] = self._clamp_tou(
+            "tou_flag_1", segmento["flag"]
+        )
+        return tabla
+
+    def _presupuesto_tablas(self) -> bool:
+        """¿Queda presupuesto de tablas en la ventana de 1 h? (2/h)."""
+        ahora = datetime.now(tz=UTC)
+        self._tablas_ts = [
+            ts
+            for ts in self._tablas_ts
+            if (ahora - ts).total_seconds() <= 3600
+        ]
+        maximo = int(self._param(
+            CONF_MAX_TABLAS_TOU_HORA, DEFAULT_MAX_TABLAS_TOU_HORA
+        ))
+        return len(self._tablas_ts) < maximo
+
+    async def _escribir_tabla_tou(
+        self,
+        tramo: PlanTramo | None,
+        tabla: dict[int, int],
+        motivo: str,
+        forzar: bool = False,
+    ) -> str:
+        """Escribe la tabla si cambió, por bloques de 6 registros.
+
+        NUNCA se toca 244-249 (248 lo auto-restaura el firmware y 249
+        activaría la venta autónoma): las direcciones salen del YAML y
+        se verifica defensivamente el rango del bloque. El presupuesto
+        es propio (tablas/hora, no escrituras individuales); el verify
+        relee la tabla completa en bloques ≤16. Devuelve "igual",
+        "aplazada", "ok", "parcial", "fallo" o "fallback" (y relanza
+        excepciones de escritura dejando auditoría audible). Con
+        ``forzar`` (reparación del vigilante) se salta la idempotencia:
+        la tabla del inversor ya no coincide aunque el objetivo sea el
+        mismo.
+        """
+        if tabla == self._tabla_tou_aplicada and not forzar:
+            return "igual"
+        # Blindaje defensivo: la tabla solo puede ser 250-279 (YAML)
+        direcciones = self._direcciones_tabla_tou()
+        assert set(tabla) == set(direcciones), (
+            "tabla ToU fuera del rango esperado 250-279"
+        )
+        if not self._presupuesto_tablas():
+            _LOGGER.warning(
+                "Presupuesto de tablas ToU agotado: %d/%d en la última "
+                "hora; el tramo vuelve a intentarse en su momento",
+                len(self._tablas_ts),
+                int(self._param(
+                    CONF_MAX_TABLAS_TOU_HORA, DEFAULT_MAX_TABLAS_TOU_HORA
+                )),
+            )
+            await self._auditar(
+                tramo, tabla, ejecutada=False,
+                motivo=f"{motivo}: tabla ToU aplazada por presupuesto",
+            )
+            return "aplazada"
+        inicio = datetime.now(tz=UTC)
+        anteriores = {} if forzar else (self._tabla_tou_aplicada or {})
+        try:
+            for campo in range(5):
+                addr0 = direcciones[campo * 6]
+                valores = [
+                    tabla[direcciones[campo * 6 + i]] for i in range(6)
+                ]
+                if all(
+                    anteriores.get(direcciones[campo * 6 + i]) == v
+                    for i, v in enumerate(valores)
+                ):
+                    continue  # bloque idéntico: no reescribir
+                await self._escritor.escribir_bloque(addr0, valores)
+        except ErrorEscrituraSolarman as err:
+            _LOGGER.error("Error escribiendo la tabla ToU: %s", err)
+            await self._auditar(
+                tramo, tabla, ejecutada=False,
+                verificado="error_escritura",
+                motivo=f"{motivo}: tabla ToU: {err}",
+            )
+            raise
+        self._tablas_ts.append(datetime.now(tz=UTC))
+        latencia = float(
+            self._param(CONF_LATENCIA_VERIFY_S, DEFAULT_LATENCIA_VERIFY_S)
+        )
+        await asyncio.sleep(latencia)
+        verificado = "parcial"
+        try:
+            leida = await self._leer_tabla_tou()
+        except ErrorEscrituraSolarman as err:
+            _LOGGER.warning("Verify parcial de la tabla ToU: %s", err)
+        else:
+            verificado = "ok" if leida == tabla else "fallo"
+            if verificado == "fallo":
+                _LOGGER.warning(
+                    "Verify fallido de la tabla ToU: aplicada %s, "
+                    "leída %s", tabla, leida
+                )
+        duracion = (datetime.now(tz=UTC) - inicio).total_seconds()
+        await self._auditar(
+            tramo, tabla, ejecutada=True,
+            verificado=f"tou_{verificado}", latencia_s=duracion,
+            motivo=f"{motivo}: tou_tabla",
+        )
+        if verificado == "ok":
+            self._tabla_tou_aplicada = tabla
+            self._fallos_consecutivos = 0
+        elif verificado == "fallo":
+            self._fallos_consecutivos += 1
+            if (
+                self._fallos_consecutivos
+                >= FALLOS_VERIFY_FALLBACK
+            ):
+                await self._async_fallback(
+                    f"verify de tabla ToU fallido "
+                    f"{self._fallos_consecutivos} veces consecutivas"
+                )
+                return "fallback"
+        return verificado
+
+    async def _leer_tabla_tou(self) -> dict[int, int]:
+        """Lee la tabla 250-279 completa en bloques de ≤16 registros."""
+        direcciones = self._direcciones_tabla_tou()
+        valores: dict[int, int] = {}
+        # 250-265 (16) y 266-279 (14): 30 registros, ≤16 por lectura
+        for offset, cantidad in ((0, 16), (16, 14)):
+            leidos = await self._escritor.leer(
+                direcciones[offset], cantidad
+            )
+            valores.update(
+                {
+                    direcciones[offset + i]: int(v)
+                    for i, v in enumerate(leidos)
+                }
+            )
+        return valores
+
+    async def _async_notificar_tou(self, mensaje: str) -> None:
+        """Notificación persistente de problemas con la tabla (F6/A)."""
+        try:
+            await self.hass.services.async_call(
+                "persistent_notification",
+                "create",
+                {
+                    "title": "Optimizador Batería OMIE: tabla ToU",
+                    "message": mensaje,
+                    "notification_id": f"{DOMAIN}_tou_sin_segmento",
+                },
+                blocking=True,
+            )
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("No se pudo emitir la notificación: %s", err)
+
+    async def _async_vigilante_tou(self, ahora) -> None:
+        """Releo la tabla del inversor y repárala si la pisaron.
+
+        Vigilante v2 (F6/A): sustituye al previsto sobre 248 (auto-
+        restaurado por firmware: nada que vigilar). Compara la tabla
+        real con la última aplicada y restaura la última OBJETIVO un
+        máximo de una vez por hora (la nube Solarman borró 248-279 el
+        22-nov-2026). Solo con control activo y tabla aplicada.
+        """
+        if not self._control_activo or self._tabla_tou_objetivo is None:
+            return
+        ahora_utc = datetime.now(tz=UTC)
+        if (
+            self._ts_vigilante is not None
+            and (ahora_utc - self._ts_vigilante).total_seconds()
+            < VIGILANTE_TOU_COOLDOWN_S
+        ):
+            return
+        try:
+            leida = await self._leer_tabla_tou()
+        except ErrorEscrituraSolarman as err:
+            _LOGGER.warning(
+                "Vigilante ToU: no se pudo leer la tabla: %s", err
+            )
+            self._ts_vigilante = ahora_utc
+            await self._auditar(
+                None, {}, ejecutada=False,
+                verificado="tou_sin_segmento",
+                motivo=f"vigilante: lectura fallida: {err}",
+            )
+            await self._async_notificar_tou(
+                "No se pudo leer la tabla ToU (250-279) del inversor. "
+                "Verifica la conectividad del datalogger."
+            )
+            return
+        if leida == self._tabla_tou_objetivo:
+            self._ts_vigilante = None
+            return
+        _LOGGER.warning(
+            "Vigilante ToU: la tabla del inversor derivó del objetivo "
+            "(¿push de la nube/datalogger?): reparando"
+        )
+        try:
+            resultado = await self._escribir_tabla_tou(
+                None, self._tabla_tou_objetivo, "vigilante tou", forzar=True
+            )
+        except ErrorEscrituraSolarman as err:
+            self._ts_vigilante = ahora_utc
+            await self._auditar(
+                None, self._tabla_tou_objetivo, ejecutada=False,
+                verificado="tou_sin_segmento",
+                motivo=f"vigilante: reparación fallida: {err}",
+            )
+            await self._async_notificar_tou(
+                "La tabla ToU (250-279) derivó del plan y no se pudo "
+                "reparar automáticamente. Revisa el inversor."
+            )
+            return
+        if resultado == "ok":
+            await self._auditar(
+                None, self._tabla_tou_objetivo, ejecutada=False,
+                verificado="tou_tabla_reparada",
+                motivo="vigilante: tabla restaurada tras deriva",
+            )
+            self._ts_vigilante = ahora_utc
+        elif resultado in ("fallo", "parcial"):
+            self._ts_vigilante = ahora_utc
+            await self._auditar(
+                None, self._tabla_tou_objetivo, ejecutada=False,
+                verificado="tou_sin_segmento",
+                motivo=f"vigilante: reparación {resultado}",
+            )
+            await self._async_notificar_tou(
+                "La tabla ToU (250-279) derivó y la reparación no "
+                "verificó. Se reintentará en el siguiente ciclo."
+            )
+        elif resultado == "aplazada":
+            self._ts_vigilante = ahora_utc
+            await self._async_notificar_tou(
+                "La tabla ToU (250-279) derivó del plan y el "
+                "presupuesto de tablas/hora está agotado."
+            )
 
     # ─── Salvaguardas (U4) ───
 
@@ -952,7 +1386,22 @@ class EjecutorControl:
         # Guard dinámico de potencia contratada (D9)
         objetivos = self._aplicar_guard(objetivos)
         pendientes = self._filtrar_idempotente(objetivos)
-        if not pendientes:
+        # F6/A (24-nov-2026): tabla ToU objetivo del tramo. Con la
+        # tabla como actuador, los amperajes solos no mueven energía:
+        # cada tramo ejecutable fija su segmento en 250-279 (AUTOCONSUMO/
+        # MANTENER dejan la tabla vacía = float deseado).
+        tabla_objetivo = None
+        if self._actuador_tou():
+            hasta_manual = manual["hasta"] if manual is not None else None
+            tabla_objetivo = self._objetivos_tabla_tou(tramo, hasta_manual)
+            self._tabla_tou_objetivo = tabla_objetivo
+        if (
+            not pendientes
+            and (
+                tabla_objetivo is None
+                or tabla_objetivo == self._tabla_tou_aplicada
+            )
+        ):
             self._estado_simulado = None
             self._actualizar_estado()
             return
@@ -960,7 +1409,10 @@ class EjecutorControl:
         # Rate limiter (D6)
         maximo = int(self._param(CONF_MAX_ESCRITURAS_HORA,
                                  DEFAULT_MAX_ESCRITURAS_HORA))
-        if self._escrituras_ultima_hora() + len(pendientes) > maximo:
+        if (
+            pendientes
+            and self._escrituras_ultima_hora() + len(pendientes) > maximo
+        ):
             _LOGGER.warning(
                 "Rate limiter: %d escrituras en la última hora "
                 "(máx %d); aplazado al siguiente tramo",
@@ -974,6 +1426,20 @@ class EjecutorControl:
             )
             self._actualizar_estado()
             return
+
+        # F6/A: la tabla ToU va PRIMERO: si su escritura falla, el
+        # inversor conserva la configuración previa completa (tabla y
+        # amperajes coherentes entre sí) y el error se relanza
+        if tabla_objetivo is not None:
+            resultado_tabla = await self._escribir_tabla_tou(
+                tramo, tabla_objetivo, motivo
+            )
+            if resultado_tabla == "fallback":
+                return
+            if resultado_tabla == "aplazada":
+                self._estado_simulado = "rate_limiter"
+                self._actualizar_estado()
+                return
 
         _LOGGER.info(
             "Aplicando %s (%s): %s", tramo.accion, motivo, pendientes
@@ -1391,7 +1857,23 @@ class EjecutorControl:
             "escrituras_ultima_hora": self._escrituras_ultima_hora(),
             "modo_manual": self.modo_manual,
             "ultimo_aplicado": dict(self._ultimo_aplicado),
+            "actuador_tou": self._actuador_tou(),
+            "tabla_tou": self._resumen_tabla_tou(),
             "ruta_auditoria": str(self._ruta_auditoria()),
+        }
+
+    def _resumen_tabla_tou(self) -> dict[str, int] | None:
+        """Resumen del segmento 1 de la tabla aplicada (diagnóstico)."""
+        if self._tabla_tou_aplicada is None:
+            return None
+        direcciones = self._direcciones_tabla_tou()
+        tabla = self._tabla_tou_aplicada
+        return {
+            "hora_1": tabla[direcciones[0]],
+            "hora_2": tabla[direcciones[1]],
+            "potencia_1": tabla[direcciones[6]],
+            "soc_stop_1": tabla[direcciones[18]],
+            "flag_1": tabla[direcciones[24]],
         }
 
     def _ruta_auditoria(self) -> Path:

@@ -26,10 +26,16 @@ from custom_components.optimizador_bateria_omie.const import (
     ALGORITMO_LP,
     CONF_ALGORITMO_PLANNER,
     CONF_BLOQUE_MINUTOS,
+    CONF_CAPACIDAD_BATERIA_KWH,
     CONF_DESVIACION_SOC_REPLAN,
     CONF_ENTITY_ID_SOC_BATERIA,
+    CONF_FACTOR_RITMO,
+    CONF_MARGEN_COBERTURA_WH,
     DEFAULT_BLOQUE_MINUTOS,
+    DEFAULT_CAPACIDAD_BATERIA_KWH,
     DEFAULT_DESVIACION_SOC_REPLAN,
+    DEFAULT_FACTOR_RITMO,
+    DEFAULT_MARGEN_COBERTURA_WH,
     DOMAIN,
     HORA_AVISO_SIN_PRECIOS_MANANA,
     NOTIFICACION_ML_ADOPCION,
@@ -41,6 +47,7 @@ from custom_components.optimizador_bateria_omie.coordinador import (
     CoordinadorDatosOmie,
 )
 from custom_components.optimizador_bateria_omie.planificador import (
+    ACCION_CARGA_RED,
     ParametrosPlanner,
     Plan,
     PlanificadorGreedy,
@@ -62,7 +69,19 @@ ENTITY_ID_FESTIVO_HOY = f"switch.{DOMAIN}_festivo_hoy"
 # curso (D-F5.3.1): seguridad y ventana de oportunidad ante caída de
 # SOC. Todo lo demás (precios, perfil, festivo, numbers, tramo del
 # límite...) solo cambia el plan desde el siguiente límite de bloque.
-MOTIVOS_REPLAN_INMEDIATO = frozenset({"desviacion_soc"})
+# F6/B: la cobertura insuficiente (caso de uso U1) también es inmediata:
+# comprar por adelantado no puede esperar al límite del bloque.
+MOTIVOS_REPLAN_INMEDIATO = frozenset(
+    {"desviacion_soc", "cobertura_insuficiente"}
+)
+# Cooldown del replan por cobertura: el check corre cada 30 min, pero
+# no re-dispara el recálculo (ni la notificación) más de una vez por
+# ventana de 45 min aunque la condición persista (el plan ya replanifica
+# con el SOC real; persistiría solo si el precio lo desaconseja).
+COOLDOWN_REPLAN_COBERTURA_S = 2700.0
+# Ritmo excesivo (F6/B): disparar tras 2 muestreos consecutivos por
+# encima del factor previsto (30 min entre muestreos → ~1 h)
+RITMO_MUESTRAS_DISPARO = 2
 
 
 def _tramo_actual_index(ahora: datetime | None = None) -> int:
@@ -100,6 +119,11 @@ class CoordinadorPlan:
         self._aviso_precios_fecha: date | None = None
         self._aviso_ml_fecha: date | None = None
         self._adoptado_previo: bool | None = None
+        # F6/B: check de cobertura (caso de uso U1)
+        self._ts_replan_cobertura: datetime | None = None
+        self._ritmo_excesos = 0
+        # F6/B: bug 2 — existencia del entity_id de SOC verificada al arranque
+        self.replan_soc_activo = False
 
     # ─── Registro ───
 
@@ -147,19 +171,217 @@ class CoordinadorPlan:
                 second=0,
             )
         )
-        # Desviación de SOC: escucha el SOC real de telemetría
+        # Desviación de SOC: escucha el SOC real de telemetría.
+        # F6/B (bug 2): el listener se registraba sin verificar que la
+        # entidad EXISTE — un entity_id caducado dejaba la replanificación
+        # por desviación silenciosamente muerta. Ahora se comprueba al
+        # arranque y queda visible en `replan_soc_activo` (sensor plan).
         entity_id_soc = self.entry.data.get(CONF_ENTITY_ID_SOC_BATERIA)
-        if entity_id_soc:
+        if entity_id_soc and self.hass.states.get(entity_id_soc) is None:
+            _LOGGER.warning(
+                "entity_id de SOC (%s) configurado pero INEXISTENTE en HA: "
+                "la replanificación por desviación (D11) queda INACTIVA; "
+                "corrige la entidad en Reconfigurar",
+                entity_id_soc,
+            )
+        elif entity_id_soc:
+            self.replan_soc_activo = True
             self._canceladores.append(
                 async_track_state_change_event(
                     self.hass, [entity_id_soc], self._async_soc_cambiado
                 )
+            )
+            _LOGGER.info(
+                "Replanificación por desviación de SOC activa (entidad %s)",
+                entity_id_soc,
             )
         else:
             _LOGGER.info(
                 "Sin entity_id de SOC: la replanificación por desviación "
                 "queda deshabilitada"
             )
+        # F6/B: check de cobertura periódico (caso de uso U1): SOC real +
+        # FV previsto vs consumo hasta el próximo tramo barato del plan
+        self._canceladores.append(
+            async_track_time_change(
+                self.hass,
+                self._async_cobertura_periodica,
+                minute=(0, 30),
+                second=0,
+            )
+        )
+
+    @callback
+    def _async_cobertura_periodica(self, ahora) -> None:
+        """Cada 30 min: comprueba la cobertura hasta el próximo valle."""
+        self.hass.async_create_task(self._async_check_cobertura())
+
+    async def _async_check_cobertura(self) -> None:
+        """Cobertura U1: ¿la batería llega al próximo tramo CARGA_RED?
+
+        Déficit si ``SOC real (Wh) − (consumo previsto − FV previsto)
+        hasta la ventana < margen``. Si hay déficit → replan inmediato
+        ``cobertura_insuficiente`` (bypassa el bloque congelado): el
+        planner decide con el SOC real si conviene cargar antes (solo
+        si ``precio_max_compra`` lo permite; nunca se fuerza compra
+        cara). Segunda barrera: ritmo de consumo real > factor ×
+        previsto durante 2 muestreos consecutivos → mismo replan
+        (día frío con aerotermia sin esperar al umbral absoluto de SOC).
+        """
+        plan = self._plan
+        telemetria = self.coordinador_telemetria.data
+        if plan is None or not plan.tramos:
+            return
+        if telemetria is None or telemetria.soc is None:
+            return
+        ahora = datetime.now().astimezone()
+        hoy = ahora.date()
+
+        # Ventana: inicio del PRÓXIMO tramo CARGA_RED del plan
+        ventana: datetime | None = None
+        for tramo in plan.tramos:
+            fecha = (
+                tramo.fecha
+                if isinstance(tramo.fecha, date)
+                else hoy
+            )
+            inicio = datetime(
+                fecha.year, fecha.month, fecha.day,
+                (tramo.tramo * 15) // 60, (tramo.tramo * 15) % 60,
+                tzinfo=ahora.tzinfo,
+            )
+            if inicio > ahora and tramo.accion == ACCION_CARGA_RED:
+                ventana = inicio
+                break
+        if ventana is None:
+            return  # sin tramo barato en el horizonte: nada que cubrir
+
+        # Consumo y FV previstos (Wh) desde ahora hasta la ventana
+        consumo_wh, fv_wh, tramos_considerados = self._energia_prevista(
+            ahora, ventana
+        )
+        if tramos_considerados == 0:
+            return
+        consumo_neto = max(consumo_wh - fv_wh, 0.0)
+
+        capacidad = float(
+            self.entry.data.get(
+                CONF_CAPACIDAD_BATERIA_KWH, DEFAULT_CAPACIDAD_BATERIA_KWH
+            )
+        )
+        margen = self.entry.data.get(
+            CONF_MARGEN_COBERTURA_WH, DEFAULT_MARGEN_COBERTURA_WH
+        )
+        if margen is None:
+            margen = 0.2 * capacidad * 1000.0
+        margen = float(margen)
+
+        soc_wh = (telemetria.soc / 100.0) * capacidad * 1000.0
+        deficit = (soc_wh - consumo_neto) < margen
+
+        # Ritmo real vs previsto (muestreo instantáneo, 2 consecutivos)
+        factor = float(
+            self.entry.data.get(CONF_FACTOR_RITMO, DEFAULT_FACTOR_RITMO)
+        )
+        previsto_w = (
+            consumo_neto * 4.0 / tramos_considerados  # Wh/25 min → W
+        )
+        ritmo_excesivo = False
+        if (
+            telemetria.consumo_casa is not None
+            and telemetria.produccion_fv is not None
+            and previsto_w > 0
+        ):
+            neto_real = telemetria.consumo_casa - telemetria.produccion_fv
+            if neto_real > factor * previsto_w:
+                self._ritmo_excesos += 1
+            else:
+                self._ritmo_excesos = 0
+            ritmo_excesivo = self._ritmo_excesos >= RITMO_MUESTRAS_DISPARO
+
+        if not deficit and not ritmo_excesivo:
+            return
+        if (
+            self._ts_replan_cobertura is not None
+            and (ahora - self._ts_replan_cobertura).total_seconds()
+            < COOLDOWN_REPLAN_COBERTURA_S
+        ):
+            return
+        self._ts_replan_cobertura = ahora
+        self._ritmo_excesos = 0
+        _LOGGER.warning(
+            "Cobertura insuficiente: SOC %.1f %% (%.0f Wh) con "
+            "%.0f Wh de consumo neto previsto hasta las %s (margen "
+            "%.0f Wh; %s): replanificación inmediata",
+            telemetria.soc,
+            soc_wh,
+            consumo_neto,
+            ventana.strftime("%H:%M"),
+            margen,
+            "déficit" if deficit else f"ritmo >{factor}× previsto",
+        )
+        await self._async_notificar(
+            "Optimizador Batería OMIE: cobertura insuficiente",
+            f"SOC {telemetria.soc:.0f} % con consumo previsto de "
+            f"{consumo_neto / 1000:.1f} kWh hasta las "
+            f"{ventana.strftime('%H:%M')} (margen {margen / 1000:.1f} "
+            "kWh). Se replanifica al momento; el plan decidirá si "
+            "conviene cargar antes del valle.",
+            f"{DOMAIN}_cobertura_insuficiente",
+        )
+        await self.async_recalcular("cobertura_insuficiente")
+
+    def _energia_prevista(
+        self, ahora: datetime, ventana: datetime
+    ) -> tuple[float, float, int]:
+        """Consumo/FV previstos (Wh) del intervalo (ahora, ventana].
+
+        Suma p50 − FV de los tramos completos del intervalo desde las
+        predicciones en cache (hoy/mañana). Tramos sin predicción
+        cuentan como 0 (los gaps del predictor no abortan el check).
+        """
+        def _dia_de(fecha: date) -> PrediccionDia | None:
+            if self._prediccion_hoy is not None and (
+                fecha == self._prediccion_hoy.fecha
+            ):
+                return self._prediccion_hoy
+            if self._prediccion_manana is not None and (
+                fecha == self._prediccion_manana.fecha
+            ):
+                return self._prediccion_manana
+            return None
+
+        consumo = 0.0
+        fv = 0.0
+        considerados = 0
+        fecha = ahora.date()
+        while (
+            datetime.combine(
+                fecha, datetime.min.time(), tzinfo=ventana.tzinfo
+            )
+            <= ventana
+        ):
+            prediccion = _dia_de(fecha)
+            base = datetime.combine(
+                fecha, datetime.min.time(), tzinfo=ventana.tzinfo
+            )
+            for idx in range(96):
+                inicio = base + timedelta(minutes=15 * idx)
+                if inicio <= ahora or inicio >= ventana:
+                    continue
+                fin = inicio + timedelta(minutes=15)
+                fraccion = min(fin, ventana) - max(inicio, ahora)
+                peso = fraccion.total_seconds() / 900.0
+                if prediccion is not None:
+                    c = prediccion.consumo[idx]
+                    if c is not None:
+                        consumo += c.p50 * 0.25 * peso
+                    f = prediccion.fv[idx]
+                    if f is not None:
+                        fv += f.p50 * 0.25 * peso
+                considerados += 1
+            fecha += timedelta(days=1)
+        return consumo, fv, considerados
 
     @callback
     def _async_precios_nuevos(self) -> None:

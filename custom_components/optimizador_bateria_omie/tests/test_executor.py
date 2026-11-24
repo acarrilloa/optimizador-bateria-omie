@@ -5,6 +5,7 @@ salen del registers.yaml empaquetado (nunca hardcodeadas).
 """
 
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -102,10 +103,16 @@ def escritor():
     async def _escribir(addr, valor):
         w._leidos[addr] = valor
 
+    async def _escribir_bloque(addr, valores):
+        for i, v in enumerate(valores):
+            w._leidos[addr + i] = v
+
     w.escribir = AsyncMock(side_effect=_escribir)
-    w.escribir_bloque = AsyncMock()
+    w.escribir_bloque = AsyncMock(side_effect=_escribir_bloque)
     w.leer = AsyncMock(
-        side_effect=lambda addr, cantidad=1: [w._leidos.get(addr, 0)]
+        side_effect=lambda addr, cantidad=1: [
+            w._leidos.get(addr + i, 0) for i in range(cantidad)
+        ]
     )
     return w
 
@@ -145,7 +152,11 @@ def _executor(
     periodo="valle",
 ) -> EjecutorControl:
     entry = MagicMock()
-    entry.data = dict(entry_data or {})
+    # F6/A: default de los tests v0.14.x (sin tabla ToU); los tests de
+    # la tabla la activan explícitamente con entry_data
+    datos = {"actuador_tou": False}
+    datos.update(entry_data or {})
+    entry.data = datos
     coordinador = _coordinador_con_tramo(tramo, telemetria, periodo)
     return EjecutorControl(
         hass=hass,
@@ -1419,3 +1430,251 @@ class TestRearmeArranqueF52:
         )
         # Y el tramo NO se aborta: el 232 quedó aplicado
         assert _escrituras(escritor)[232] == 1
+
+
+class TestTablaTouF6:
+    """F6/A: tabla ToU 250-279 como actuador del tramo."""
+
+    def _direcciones(self, mapa) -> list[int]:
+        return [
+            mapa.direccion("estandar", f"tou_{campo}_{i}", "control")
+            for campo in ("hora", "potencia", "vstop", "soc_stop", "flag")
+            for i in range(1, 7)
+        ]
+
+    def _plan_run_carga(self) -> list:
+        """Run de 3 tramos CARGA_RED: 09:15, 09:30 y 09:45."""
+        return [
+            PlanTramo(
+                fecha=HOY,
+                tramo=37,
+                hora="09:15",
+                accion=ACCION_CARGA_RED,
+                potencia_bateria_w=-4000.0,
+                potencia_carga_red_w=2450.0,
+                potencia_venta_red_w=0.0,
+                soc_previsto_pct=50.0,
+                precio_referencia_eur_kwh=0.08,
+                ahorro_tramo_eur=0.0,
+            ),
+            PlanTramo(
+                fecha=HOY,
+                tramo=38,
+                hora="09:30",
+                accion=ACCION_CARGA_RED,
+                potencia_bateria_w=-4000.0,
+                potencia_carga_red_w=2750.0,
+                potencia_venta_red_w=0.0,
+                soc_previsto_pct=55.0,
+                precio_referencia_eur_kwh=0.08,
+                ahorro_tramo_eur=0.0,
+            ),
+            PlanTramo(
+                fecha=HOY,
+                tramo=39,
+                hora="09:45",
+                accion=ACCION_CARGA_RED,
+                potencia_bateria_w=-4000.0,
+                potencia_carga_red_w=2600.0,
+                potencia_venta_red_w=0.0,
+                soc_previsto_pct=60.0,
+                precio_referencia_eur_kwh=0.08,
+                ahorro_tramo_eur=0.0,
+            ),
+        ]
+
+    def _conectar_plan(self, executor, tramos):
+        """Pone el plan en el coordinador mock y el tramo actual."""
+        executor.coordinador_plan.plan = SimpleNamespace(tramos=tramos)
+
+    @pytest.mark.asyncio
+    async def test_carga_red_escribe_tabla_del_run(
+        self, hass, mapa, escritor
+    ):
+        tramos = self._plan_run_carga()
+        executor = _executor(
+            hass, mapa, escritor, tramos[1],
+            entry_data={"actuador_tou": True, "modo_activacion": "completo"},
+        )
+        self._conectar_plan(executor, tramos)
+        executor._control_activo = True
+
+        await executor.async_aplicar_tramo("test")
+
+        d = self._direcciones(mapa)
+        # Segmento del run completo: 09:15 → 10:00, flag 5 (carga),
+        # potencia máxima del run, vstop observado, SOC-stop = soc_max
+        assert escritor._leidos[d[0]] == 915  # hora_1
+        assert escritor._leidos[d[1]] == 1000  # hora_2 (fin del run)
+        assert escritor._leidos[d[6]] == 2750  # potencia_1: máx del run
+        assert escritor._leidos[d[12]] == 4900  # vstop_1 (observado)
+        assert escritor._leidos[d[18]] == 95  # soc_stop_1 = soc_max
+        assert escritor._leidos[d[24]] == 5  # flag_1: carga
+        # Resto de puntos desactivados (sin flags de venta residuales)
+        assert escritor._leidos[d[5]] == 0  # hora_3
+        assert escritor._leidos[d[24 + 1]] == 0  # flag_2
+        assert escritor._leidos[d[29]] == 0  # flag_6
+        # Amperajes: receta D1 (230 = corriente, 211 = 0) y llave 232
+        escrituras = _escrituras(escritor)
+        assert escrituras[211] == 0
+        assert escrituras[232] == 1
+        # Resumen visible en estado_detalle
+        resumen = executor.estado_detalle["tabla_tou"]
+        assert resumen["hora_1"] == 915
+        assert resumen["hora_2"] == 1000
+        assert resumen["flag_1"] == 5
+
+    @pytest.mark.asyncio
+    async def test_tabla_idempotente_no_reescribe(
+        self, hass, mapa, escritor
+    ):
+        tramos = self._plan_run_carga()
+        executor = _executor(
+            hass, mapa, escritor, tramos[1],
+            entry_data={"actuador_tou": True, "modo_activacion": "completo"},
+        )
+        self._conectar_plan(executor, tramos)
+        executor._control_activo = True
+        await executor.async_aplicar_tramo("test 1")
+        antes = escritor.escribir_bloque.call_count
+
+        await executor.async_aplicar_tramo("test 2")
+
+        # Misma tabla y mismos amperajes → cero escrituras nuevas
+        assert escritor.escribir_bloque.call_count == antes
+        assert executor.estado == "activo"
+
+    @pytest.mark.asyncio
+    async def test_venta_red_flag_4_soc_stop_minimo(
+        self, hass, mapa, escritor
+    ):
+        executor = _executor(
+            hass, mapa, escritor,
+            _tramo(ACCION_VENTA_RED, venta_w=4096.0),
+            entry_data={"actuador_tou": True, "modo_activacion": "completo"},
+        )
+        executor._control_activo = True
+
+        await executor.async_aplicar_tramo("test")
+
+        d = self._direcciones(mapa)
+        assert escritor._leidos[d[24]] == 4  # flag venta
+        assert escritor._leidos[d[18]] == 15  # soc_stop = soc_min
+        assert escritor._leidos[d[6]] == 4096  # potencia venta
+        assert escritor._leidos[d[24 + 1]] == 0  # sin más flags
+
+    @pytest.mark.asyncio
+    async def test_autoconsumo_deja_tabla_vacia(self, hass, mapa, escritor):
+        executor = _executor(
+            hass, mapa, escritor, _tramo(ACCION_AUTOCONSUMO),
+            entry_data={"actuador_tou": True, "modo_activacion": "completo"},
+        )
+        executor._control_activo = True
+
+        await executor.async_aplicar_tramo("test")
+
+        d = self._direcciones(mapa)
+        assert all(escritor._leidos.get(addr, 0) == 0 for addr in d)
+        assert escritor._leidos[232] == 0  # amperajes seguros
+
+    @pytest.mark.asyncio
+    async def test_presupuesto_tablas_aplaza(self, hass, mapa, escritor):
+        tramos = self._plan_run_carga()
+        executor = _executor(
+            hass, mapa, escritor, tramos[1],
+            entry_data={
+                "actuador_tou": True,
+                "modo_activacion": "completo",
+                "max_tablas_tou_hora": 1,
+            },
+        )
+        self._conectar_plan(executor, tramos)
+        executor._control_activo = True
+        await executor.async_aplicar_tramo("test 1")
+        assert escritor.escribir_bloque.call_count == 5  # 5 bloques
+
+        # Cambio de acción: tabla nueva → presupuesto agotado → aplazada
+        executor.coordinador_plan.tramo_actual.return_value = _tramo(
+            ACCION_AUTOCONSUMO
+        )
+        await executor.async_aplicar_tramo("test 2")
+        assert escritor.escribir.call_count == 4  # amperajes autoconsumo
+        assert executor.estado == "dry_run"
+
+    @pytest.mark.asyncio
+    async def test_nunca_se_tocan_244_249(self, hass, mapa, escritor):
+        d = self._direcciones(mapa)
+        tramos = self._plan_run_carga()
+        executor = _executor(
+            hass, mapa, escritor, tramos[1],
+            entry_data={"actuador_tou": True, "modo_activacion": "completo"},
+        )
+        executor._control_activo = True
+        await executor.async_aplicar_tramo("test")
+
+        for llamada in escritor.escribir_bloque.call_args_list:
+            addr = llamada.args[0]
+            assert d[0] <= addr <= d[-1]  # solo 250-279
+
+    @pytest.mark.asyncio
+    async def test_actuador_off_no_toca_tabla(self, hass, mapa, escritor):
+        tramos = self._plan_run_carga()
+        # actuador_tou False es el default de los tests v0.14.x
+        executor = _executor(
+            hass, mapa, escritor, tramos[1],
+            entry_data={"modo_activacion": "completo"},
+        )
+        self._conectar_plan(executor, tramos)
+        executor._control_activo = True
+
+        await executor.async_aplicar_tramo("test")
+
+        assert escritor.escribir_bloque.call_count == 0
+        assert executor.estado_detalle["tabla_tou"] is None
+
+    @pytest.mark.asyncio
+    async def test_vigilante_repara_deriva(self, hass, mapa, escritor):
+        tramos = self._plan_run_carga()
+        executor = _executor(
+            hass, mapa, escritor, tramos[1],
+            entry_data={"actuador_tou": True, "modo_activacion": "completo"},
+        )
+        self._conectar_plan(executor, tramos)
+        executor._control_activo = True
+        await executor.async_aplicar_tramo("test")
+        antes = escritor.escribir_bloque.call_count
+
+        # La nube pisa la tabla: deriva del objetivo → repara
+        d = self._direcciones(mapa)
+        escritor._leidos[d[0]] = 9999
+        await executor._async_vigilante_tou(None)
+        assert escritor.escribir_bloque.call_count > antes  # reparada
+        assert (
+            escritor._leidos[d[0]]
+            == executor._tabla_tou_objetivo[d[0]]
+        )
+
+        # Deriva inmediata: cooldown 1/h → no repara
+        escritor._leidos[d[0]] = 8888
+        congelado = escritor.escribir_bloque.call_count
+        await executor._async_vigilante_tou(None)
+        assert escritor.escribir_bloque.call_count == congelado
+
+    @pytest.mark.asyncio
+    async def test_vigilante_sin_lectura_notifica(self, hass, mapa, escritor):
+        tramos = self._plan_run_carga()
+        executor = _executor(
+            hass, mapa, escritor, tramos[1],
+            entry_data={"actuador_tou": True, "modo_activacion": "completo"},
+        )
+        self._conectar_plan(executor, tramos)
+        executor._control_activo = True
+        await executor.async_aplicar_tramo("test")
+        escritor.leer = AsyncMock(
+            side_effect=ErrorEscrituraSolarman("lectura caída")
+        )
+
+        await executor._async_vigilante_tou(None)
+
+        llamada = hass.services.async_call.call_args
+        assert llamada.args[0] == "persistent_notification"

@@ -136,7 +136,8 @@ class TestSetup:
         assert len(coordinador.plan.tramos) == 96
         assert coordinador.plan.estado == "ok"
         coordinador_precio.async_add_listener.assert_called_once()
-        assert tracks.time.call_count == 2  # cambio de tramo + 04:35
+        # cambio de tramo + 04:35 + check de cobertura (F6/B, cada 30 min)
+        assert tracks.time.call_count == 3
         # Sin entity_id de SOC no se suscribe a desviaciones
         tracks.state.assert_not_called()
 
@@ -597,3 +598,161 @@ class TestAvisosDatos:
         ]
         assert len(creaciones) == 1
         assert "boom" in creaciones[0].args[2]["message"]
+import pytest
+
+from custom_components.optimizador_bateria_omie.const import (
+    CONF_ENTITY_ID_SOC_BATERIA,
+)
+from custom_components.optimizador_bateria_omie.planificador import (
+    ACCION_CARGA_RED,
+    ACCION_MANTENER,
+    PlanTramo,
+)
+from custom_components.optimizador_bateria_omie.predictor_consumo import (
+    PercentilesTramo,
+)
+
+
+def _tramo_plan(idx: int, accion: str) -> PlanTramo:
+    return PlanTramo(
+        fecha=date.today(),
+        tramo=idx,
+        hora=f"{idx * 15 // 60:02d}:{idx * 15 % 60:02d}",
+        accion=accion,
+        potencia_bateria_w=0.0,
+        potencia_carga_red_w=2450.0 if accion == ACCION_CARGA_RED else 0.0,
+        potencia_venta_red_w=0.0,
+        soc_previsto_pct=50.0,
+        precio_referencia_eur_kwh=0.08,
+        ahorro_tramo_eur=0.0,
+    )
+
+
+def _plan_con_valle_a_las_14() -> SimpleNamespace:
+    """Plan: MANTENER hasta las 14:00 y CARGA_RED después."""
+    return SimpleNamespace(
+        tramos=[
+            _tramo_plan(i, ACCION_CARGA_RED if i >= 56 else ACCION_MANTENER)
+            for i in range(96)
+        ]
+    )
+
+
+def _telemetria_simple(soc: float, consumo: float = 300.0) -> SimpleNamespace:
+    return SimpleNamespace(
+        soc=soc, consumo_casa=consumo, produccion_fv=0.0
+    )
+
+
+class TestCoberturaU1:
+    """F6/B: check de cobertura hasta el próximo tramo barato (U1)."""
+
+    @pytest.mark.asyncio
+    async def test_deficit_replan_inmediato(
+        self, coordinador, coordinador_telemetria, hass
+    ):
+        # Caso U1 emulado: SOC 15 % a las 09:00, valle a las 14:00.
+        # Consumo previsto: 300 W → 19 tramos netos ≈ 1425 Wh, SOC =
+        # 2304 Wh < margen default (20 % de 15,36 kWh = 3072 Wh)
+        hoy = datetime.now().astimezone().date()
+        coordinador._plan = _plan_con_valle_a_las_14()
+        coordinador._prediccion_hoy = _prediccion(hoy)
+        coordinador_telemetria.data = _telemetria_simple(15.0)
+
+        with patch.object(
+            coordinador, "async_recalcular", AsyncMock()
+        ) as recalc, _fijar_reloj(9 * 60):
+            await coordinador._async_check_cobertura()
+
+        recalc.assert_awaited_once_with("cobertura_insuficiente")
+        # Notificación persistente del episodio
+        llamada = hass.services.async_call.call_args
+        assert llamada.args[0] == "persistent_notification"
+
+    @pytest.mark.asyncio
+    async def test_sin_deficit_no_replan(
+        self, coordinador, coordinador_telemetria
+    ):
+        hoy = datetime.now().astimezone().date()
+        coordinador._plan = _plan_con_valle_a_las_14()
+        coordinador._prediccion_hoy = _prediccion(hoy)
+        # SOC 80 %: 12288 Wh − 1425 Wh ≫ margen
+        coordinador_telemetria.data = _telemetria_simple(80.0)
+
+        with patch.object(
+            coordinador, "async_recalcular", AsyncMock()
+        ) as recalc, _fijar_reloj(9 * 60):
+            await coordinador._async_check_cobertura()
+
+        recalc.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_ritmo_excesivo_replan_tras_dos_muestras(
+        self, coordinador, coordinador_telemetria
+    ):
+        hoy = datetime.now().astimezone().date()
+        coordinador._plan = _plan_con_valle_a_las_14()
+        coordinador._prediccion_hoy = _prediccion(hoy)
+        # SOC holgado pero consumo real 2000 W ≫ 1,3 × 300 W previstos
+        coordinador_telemetria.data = _telemetria_simple(80.0, consumo=2000.0)
+
+        with patch.object(
+            coordinador, "async_recalcular", AsyncMock()
+        ) as recalc, _fijar_reloj(9 * 60):
+            await coordinador._async_check_cobertura()
+            recalc.assert_not_awaited()  # primera muestra: solo cuenta
+            await coordinador._async_check_cobertura()
+            recalc.assert_awaited_once_with("cobertura_insuficiente")
+
+    @pytest.mark.asyncio
+    async def test_cooldown_no_replica_replan(
+        self, coordinador, coordinador_telemetria
+    ):
+        hoy = datetime.now().astimezone().date()
+        coordinador._plan = _plan_con_valle_a_las_14()
+        coordinador._prediccion_hoy = _prediccion(hoy)
+        coordinador_telemetria.data = _telemetria_simple(15.0)
+
+        with patch.object(
+            coordinador, "async_recalcular", AsyncMock()
+        ) as recalc, _fijar_reloj(9 * 60):
+            await coordinador._async_check_cobertura()
+            await coordinador._async_check_cobertura()  # < 45 min
+
+        assert recalc.await_count == 1
+
+    def _dataclass_guard(self):
+        # Las importaciones de PercentilesTramo evitan lint de no-uso
+        assert PercentilesTramo is not None
+
+
+class TestBug2EntidadSoc:
+    """F6/B (bug 2): el listener del SOC exige entidad existente."""
+
+    @pytest.mark.asyncio
+    async def test_entidad_inexistente_deja_replan_inactivo(
+        self, coordinador, hass, tracks
+    ):
+        hass.states.get = MagicMock(return_value=None)
+        coordinador.entry.data = {
+            CONF_ENTITY_ID_SOC_BATERIA: "sensor.soc_muerto"
+        }
+
+        await coordinador.async_setup()
+
+        assert coordinador.replan_soc_activo is False
+        tracks.state.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_entidad_existente_activa_replan(
+        self, coordinador, hass, tracks
+    ):
+        hass.states.get = MagicMock(return_value=MagicMock())
+        coordinador.entry.data = {
+            CONF_ENTITY_ID_SOC_BATERIA: "sensor.soc_vivo"
+        }
+
+        await coordinador.async_setup()
+
+        assert coordinador.replan_soc_activo is True
+        tracks.state.assert_called_once()
