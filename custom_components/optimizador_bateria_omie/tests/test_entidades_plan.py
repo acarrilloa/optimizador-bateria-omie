@@ -174,3 +174,66 @@ class TestSwitchFestivoHoy:
         await switch.async_turn_off()
 
         coordinador.async_set_festivo_hoy.assert_awaited_once_with(False)
+class TestPlanAtributoCompacto:
+    """0.15.2: el atributo ``plan`` debe caber en el recorder (16 KB).
+
+    Con horizonte de 2 días (hasta 190 tramos pendientes a medianoche)
+    el ``asdict`` completo triplicaba el límite y el recorder dejaba
+    de guardar atributos (producción 24-nov)."""
+
+    def _tramo(self, tramo: int):
+        from datetime import date
+
+        from custom_components.optimizador_bateria_omie.planificador import (
+            PlanTramo as _PlanTramo,
+        )
+
+        return _PlanTramo(
+            fecha=date(2026, 11, 24),
+            tramo=tramo % 96,
+            hora=f"{tramo % 96 // 4:02d}:{(tramo % 96) % 4 * 15:02d}",
+            accion="AUTOCONSUMO",
+            potencia_bateria_w=300.0,
+            potencia_carga_red_w=2450.0,
+            potencia_venta_red_w=4096.0,
+            soc_previsto_pct=55.0,
+            precio_referencia_eur_kwh=0.123456,
+            ahorro_tramo_eur=0.065432,
+        )
+
+    def test_plan_grande_cabe_en_recorder(self):
+        import json
+
+        from custom_components.optimizador_bateria_omie.entidades_plan import (
+            MAX_TRAMOS_ATRIBUTO,
+            _plan_para_atributos,
+        )
+
+        # El peor caso (190 tramos pendientes de 2 días) se corta al
+        # tope y serializado cabe en el límite del recorder
+        resultado = _plan_para_atributos(
+            [self._tramo(i) for i in range(190)]
+        )
+        assert len(resultado) == MAX_TRAMOS_ATRIBUTO
+        tamano = len(
+            json.dumps(resultado, ensure_ascii=False, default=str).encode()
+        )
+        assert tamano < 16384, f"atributo plan: {tamano} bytes"
+
+    def test_campos_esenciales_presentes(self):
+        from custom_components.optimizador_bateria_omie.entidades_plan import (
+            _plan_para_atributos,
+        )
+
+        entrada = [self._tramo(4)]
+        compacto = _plan_para_atributos(entrada)[0]
+
+        assert set(compacto) == {
+            "hora",
+            "accion",
+            "potencia_bateria_w",
+            "potencia_carga_red_w",
+            "potencia_venta_red_w",
+            "soc_previsto_pct",
+            "precio_referencia_eur_kwh",
+        }

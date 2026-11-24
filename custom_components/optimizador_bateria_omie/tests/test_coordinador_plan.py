@@ -44,6 +44,10 @@ def hass():
         return asyncio.get_running_loop().create_task(coro)
 
     h.async_create_task = MagicMock(side_effect=_ejecutar)
+    # 0.15.2: el LP resuelve vía executor job (PuLP bloquea el loop)
+    h.async_add_executor_job = AsyncMock(
+        side_effect=lambda fn, *args: fn(*args)
+    )
     # F6-U1: los avisos persistentes se llaman en varios recálculos
     h.services.async_call = AsyncMock()
     return h
@@ -738,21 +742,44 @@ class TestCoberturaU1:
 
 
 class TestBug2EntidadSoc:
-    """F6/B (bug 2): el listener del SOC exige entidad existente."""
+    """F6/B (bug 2) + 0.15.2: la escucha se registra SIEMPRE (la
+    carrera del arranque la mataba si Solarman aún no había creado la
+    entidad); `replan_soc_activo` refleja existencia y se reevalúa en
+    el check periódico."""
 
     @pytest.mark.asyncio
-    async def test_entidad_inexistente_deja_replan_inactivo(
+    async def test_entidad_ausente_al_arranque_escucha_registrada(
         self, coordinador, hass, tracks
     ):
         hass.states.get = MagicMock(return_value=None)
         coordinador.entry.data = {
-            CONF_ENTITY_ID_SOC_BATERIA: "sensor.soc_muerto"
+            CONF_ENTITY_ID_SOC_BATERIA: "sensor.soc_tarde"
         }
 
         await coordinador.async_setup()
 
+        # Escucha registrada igualmente (la entidad aparecerá luego)
+        tracks.state.assert_called_once()
         assert coordinador.replan_soc_activo is False
-        tracks.state.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_entidad_aparece_habilita_replan_perezoso(
+        self, coordinador, hass
+    ):
+        hass.states.get = MagicMock(return_value=None)
+        coordinador.entry.data = {
+            CONF_ENTITY_ID_SOC_BATERIA: "sensor.soc_tarde"
+        }
+        await coordinador.async_setup()
+
+        # La entidad aparece tras el arranque → el check la activa
+        hass.states.get = MagicMock(return_value=MagicMock())
+        coordinador.coordinador_telemetria.data = SimpleNamespace(
+            soc=50.0, consumo_casa=300.0, produccion_fv=0.0, soc_ts=None
+        )
+        await coordinador._async_check_cobertura()
+
+        assert coordinador.replan_soc_activo is True
 
     @pytest.mark.asyncio
     async def test_entidad_existente_activa_replan(

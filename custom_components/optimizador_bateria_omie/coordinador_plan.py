@@ -183,29 +183,37 @@ class CoordinadorPlan:
             )
         )
         # Desviación de SOC: escucha el SOC real de telemetría.
-        # F6/B (bug 2): el listener se registraba sin verificar que la
-        # entidad EXISTE — un entity_id caducado dejaba la replanificación
-        # por desviación silenciosamente muerta. Ahora se comprueba al
-        # arranque y queda visible en `replan_soc_activo` (sensor plan).
+        # F6/B + 0.15.2: la escucha se registra SIEMPRE que haya
+        # entity_id — la carrera del arranque (17:56 del 24-nov:
+        # Solarman aún no había creado la entidad y el registro
+        # condicional la saltó; lo rescató el respaldo periódico de
+        # las 18:00) dejaba el detector primario muerto. HA entrega
+        # los eventos de una entidad que aparece MÁS TARDE sin
+        # re-registrar. La advertencia de entidad ausente se mantiene
+        # (diagnóstico) y ``replan_soc_activo`` se reevalúa en el
+        # check periódico.
         entity_id_soc = self.entry.data.get(CONF_ENTITY_ID_SOC_BATERIA)
-        if entity_id_soc and self.hass.states.get(entity_id_soc) is None:
-            _LOGGER.warning(
-                "entity_id de SOC (%s) configurado pero INEXISTENTE en HA: "
-                "la replanificación por desviación (D11) queda INACTIVA; "
-                "corrige la entidad en Reconfigurar",
-                entity_id_soc,
-            )
-        elif entity_id_soc:
-            self.replan_soc_activo = True
+        if entity_id_soc:
             self._canceladores.append(
                 async_track_state_change_event(
                     self.hass, [entity_id_soc], self._async_soc_cambiado
                 )
             )
-            _LOGGER.info(
-                "Replanificación por desviación de SOC activa (entidad %s)",
-                entity_id_soc,
-            )
+            if self.hass.states.get(entity_id_soc) is None:
+                _LOGGER.warning(
+                    "entity_id de SOC (%s) todavía no existe en HA "
+                    "(carrera de arranque): la escucha queda registrada "
+                    "y se activará al aparecer la entidad; el respaldo "
+                    "periódico cubre mientras tanto",
+                    entity_id_soc,
+                )
+            else:
+                self.replan_soc_activo = True
+                _LOGGER.info(
+                    "Replanificación por desviación de SOC activa "
+                    "(entidad %s)",
+                    entity_id_soc,
+                )
         else:
             _LOGGER.info(
                 "Sin entity_id de SOC: la replanificación por desviación "
@@ -247,6 +255,22 @@ class CoordinadorPlan:
             return
         ahora = datetime.now().astimezone()
         hoy = ahora.date()
+
+        # 0.15.2: reevaluación perezosa de la entidad de SOC — puede
+        # haber aparecido tras el arranque (la escucha ya está activa;
+        # el atributo del sensor plan vuelve a ser veraz)
+        entity_id_soc = self.entry.data.get(CONF_ENTITY_ID_SOC_BATERIA)
+        if (
+            entity_id_soc
+            and not self.replan_soc_activo
+            and self.hass.states.get(entity_id_soc) is not None
+        ):
+            self.replan_soc_activo = True
+            _LOGGER.info(
+                "Entidad de SOC (%s) disponible tras el arranque: "
+                "replan por desviación activa",
+                entity_id_soc,
+            )
 
         # 0.15.1 — SOC congelado (datalogger caído): la entidad no
         # cambia de estado, la telemetría sella con la hora del sondeo
@@ -710,7 +734,7 @@ class CoordinadorPlan:
         # los number de F4 mutan entry.data en caliente (D16) y deben
         # aplicar en ≤ 60 s sin recrear la entrada.
         self.planificador.p = ParametrosPlanner.desde_entry(self.entry)
-        plan = self._planificar_con_motor(hoy, precios_manana, prediccion_hoy, prediccion_manana, soc)
+        plan = await self._planificar_con_motor(hoy, precios_manana, prediccion_hoy, prediccion_manana, soc)
 
         # Bloque de compromiso (D-F5.3.1): fuera de límite y sin motivo
         # inmediato, el bloque en curso se exporta del plan previo
@@ -801,7 +825,7 @@ class CoordinadorPlan:
                 motivo,
             )
 
-    def _planificar_con_motor(
+    async def _planificar_con_motor(
         self, hoy, precios_manana, prediccion_hoy, prediccion_manana, soc
     ) -> Plan:
         """Planes con el motor configurado (D-F5.2: greedy | lp).
@@ -825,7 +849,12 @@ class CoordinadorPlan:
                 )
 
                 lp = PlanificadorLP(self.planificador.p)
-                plan = lp.planificar(
+                # PuLP resuelve en disco (MPS/SOL) y lanza CBC: es I/O +
+                # CPU bloqueantes y NO puede correr en el event loop
+                # (advertencia de HA 2026.11 en producción; regla nº1
+                # de AGENTS). Executor job: el loop queda libre.
+                plan = await self.hass.async_add_executor_job(
+                    lp.planificar,
                     hoy, precios_hoy, precios_manana,
                     prediccion_hoy, prediccion_manana, soc,
                 )

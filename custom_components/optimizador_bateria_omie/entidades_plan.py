@@ -6,7 +6,6 @@ Todas comparten el dispositivo de F1/F2 y se repintan por callback del
 # versión 0.12.0
 
 import logging
-from dataclasses import asdict
 from datetime import datetime
 from typing import Any
 
@@ -68,6 +67,12 @@ def _curva(
     ]
 
 
+# 0.15.2: tope de tramos del atributo `plan` (78 ≈ 19,5 h hacia
+# adelante, cubre el valle de mañana de la cobertura U1) — ver
+# ``_plan_para_atributos``: el recorder rechaza atributos > 16 KB
+MAX_TRAMOS_ATRIBUTO = 78
+
+
 def _tramo_actual_index() -> int:
     """Índice del tramo de 15 min en curso (hora local)."""
     ahora = datetime.now().astimezone()
@@ -81,6 +86,36 @@ def _tramos_pendientes(tramos: list) -> list:
     return [
         t for t in tramos
         if t.fecha > hoy or (t.fecha == hoy and t.tramo >= idx)
+    ]
+
+
+def _plan_para_atributos(tramos: list) -> list[dict[str, Any]]:
+    """Tramos pendientes en formato compacto (< 16 KB del recorder).
+
+    El recorder rechaza atributos > 16384 bytes — con horizonte de 2
+    días (hasta 190 tramos pendientes a medianoche) el ``asdict``
+    completo triplicaba el límite y el histórico dejaba de guardar
+    atributos (advertencia en producción 24-nov). Se conservan solo
+    los campos que consumen paneles/automatiziones (``fecha``,
+    ``tramo``, ``ahorro_tramo_eur`` e ``insuficiente`` salen), los
+    valores se redondean y la lista se corta a ``MAX_TRAMOS_ATRIBUTO``
+    (~19,5 h hacia adelante: cubre el valle de mañana que gobierna
+    las decisiones de cobertura U1); el plan completo sigue en el
+    objeto del coordinador y en el log de replanificación.
+    """
+    return [
+        {
+            "hora": t.hora,
+            "accion": t.accion,
+            "potencia_bateria_w": round(t.potencia_bateria_w, 1),
+            "potencia_carga_red_w": round(t.potencia_carga_red_w, 1),
+            "potencia_venta_red_w": round(t.potencia_venta_red_w, 1),
+            "soc_previsto_pct": round(t.soc_previsto_pct, 1),
+            "precio_referencia_eur_kwh": round(
+                t.precio_referencia_eur_kwh, 4
+            ),
+        }
+        for t in tramos[:MAX_TRAMOS_ATRIBUTO]
     ]
 
 
@@ -194,7 +229,7 @@ class SensorPlan(EntidadBasePlan):
             "ahorro_estimado": self._coordinador.ahorro_estimado_hoy(),
             "coste_sin_plan_eur": plan.coste_sin_plan_eur,
             "coste_con_plan_eur": plan.coste_con_plan_eur,
-            "plan": [asdict(t) for t in _tramos_pendientes(plan.tramos)],
+            "plan": _plan_para_atributos(_tramos_pendientes(plan.tramos)),
         }
         # Bloque de compromiso (D-F5.3.1): tamaño en caliente y hora
         # del próximo replan periódico
