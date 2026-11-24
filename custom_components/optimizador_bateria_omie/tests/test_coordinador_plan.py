@@ -1,6 +1,7 @@
 """Tests del CoordinadorPlan (F3, U4): replanificación y servicio."""
 
 import asyncio
+import logging
 from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -658,6 +659,9 @@ class TestCoberturaU1:
         coordinador._plan = _plan_con_valle_a_las_14()
         coordinador._prediccion_hoy = _prediccion(hoy)
         coordinador_telemetria.data = _telemetria_simple(15.0)
+        # Sin desviación: el respaldo 0.15.1 no debe disparar antes
+        for t in coordinador._plan.tramos:
+            t.soc_previsto_pct = 15.0
 
         with patch.object(
             coordinador, "async_recalcular", AsyncMock()
@@ -676,8 +680,10 @@ class TestCoberturaU1:
         hoy = datetime.now().astimezone().date()
         coordinador._plan = _plan_con_valle_a_las_14()
         coordinador._prediccion_hoy = _prediccion(hoy)
-        # SOC 80 %: 12288 Wh − 1425 Wh ≫ margen
+        # SOC 80 %: 12288 Wh − 1425 Wh ≫ margen (y sin desviación)
         coordinador_telemetria.data = _telemetria_simple(80.0)
+        for t in coordinador._plan.tramos:
+            t.soc_previsto_pct = 80.0
 
         with patch.object(
             coordinador, "async_recalcular", AsyncMock()
@@ -695,6 +701,8 @@ class TestCoberturaU1:
         coordinador._prediccion_hoy = _prediccion(hoy)
         # SOC holgado pero consumo real 2000 W ≫ 1,3 × 300 W previstos
         coordinador_telemetria.data = _telemetria_simple(80.0, consumo=2000.0)
+        for t in coordinador._plan.tramos:
+            t.soc_previsto_pct = 80.0
 
         with patch.object(
             coordinador, "async_recalcular", AsyncMock()
@@ -712,6 +720,9 @@ class TestCoberturaU1:
         coordinador._plan = _plan_con_valle_a_las_14()
         coordinador._prediccion_hoy = _prediccion(hoy)
         coordinador_telemetria.data = _telemetria_simple(15.0)
+        # Sin desviación: el respaldo 0.15.1 no debe disparar antes
+        for t in coordinador._plan.tramos:
+            t.soc_previsto_pct = 15.0
 
         with patch.object(
             coordinador, "async_recalcular", AsyncMock()
@@ -756,3 +767,84 @@ class TestBug2EntidadSoc:
 
         assert coordinador.replan_soc_activo is True
         tracks.state.assert_called_once()
+class TestRespaldoDesviacion0151:
+    """0.15.1: respaldo periódico de la desviación de SOC (entidad
+    congelada por caída del datalogger: sin cambios de estado no hay
+    eventos y el listener de D11 enmudece)."""
+
+    def _coordinador_con_previsto(self, coordinador, coordinador_telemetria,
+                                  previsto: float, soc: float,
+                                  soc_ts: datetime | None):
+        hoy = datetime.now().astimezone().date()
+        plan = SimpleNamespace(
+            tramos=[_tramo_plan(i, ACCION_MANTENER) for i in range(96)]
+        )
+        for t in plan.tramos:
+            t.soc_previsto_pct = previsto
+        coordinador._plan = plan
+        coordinador._prediccion_hoy = _prediccion(hoy)
+        coordinador_telemetria.data = SimpleNamespace(
+            soc=soc, consumo_casa=300.0, produccion_fv=0.0,
+            soc_ts=soc_ts,
+        )
+
+    @pytest.mark.asyncio
+    async def test_entidad_congelada_dispara_respaldo(
+        self, coordinador, coordinador_telemetria, caplog
+    ):
+        # Sin déficit: el respaldo dispara solo por desviación. El
+        # congelado se calcula DENTRO del reloj fijo (edad real 2 h)
+        with patch.object(
+            coordinador, "async_recalcular", AsyncMock()
+        ) as recalc, _fijar_reloj(9 * 60), caplog.at_level(logging.WARNING):
+            # Reloj del coordinador: hoy 09:00 (fijar_reloj solo parchea
+            # el módulo del coordinador). Congelado = 2 h antes.
+            base = datetime.now().astimezone().replace(
+                hour=9, minute=0, second=0, microsecond=0
+            )
+            congelado = base - timedelta(hours=2)
+            self._coordinador_con_previsto(
+                coordinador, coordinador_telemetria,
+                previsto=95.0, soc=60.0, soc_ts=congelado,
+            )
+            await coordinador._async_check_cobertura()
+
+        recalc.assert_awaited_once_with("desviacion_soc")
+        assert "SOC congelado" in caplog.text
+        assert "respaldo periódico" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_respaldo_respeta_cooldown(
+        self, coordinador, coordinador_telemetria
+    ):
+        from datetime import UTC as _UTC
+
+        congelado = datetime.now(tz=_UTC)
+        self._coordinador_con_previsto(
+            coordinador, coordinador_telemetria,
+            previsto=95.0, soc=60.0, soc_ts=congelado,
+        )
+        with patch.object(
+            coordinador, "async_recalcular", AsyncMock()
+        ) as recalc, _fijar_reloj(9 * 60):
+            await coordinador._async_check_cobertura()
+            # Segundo check inmediato (< 5 min): cooldown → no repite
+            await coordinador._async_check_cobertura()
+
+        assert recalc.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_soc_fresco_sin_desviacion_no_replan(
+        self, coordinador, coordinador_telemetria
+    ):
+        self._coordinador_con_previsto(
+            coordinador, coordinador_telemetria,
+            previsto=60.0, soc=60.5,
+            soc_ts=datetime.now(tz=UTC),
+        )
+        with patch.object(
+            coordinador, "async_recalcular", AsyncMock()
+        ) as recalc, _fijar_reloj(9 * 60):
+            await coordinador._async_check_cobertura()
+
+        recalc.assert_not_awaited()

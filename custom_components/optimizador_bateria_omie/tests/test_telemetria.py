@@ -400,3 +400,44 @@ class TestSensorFamiliaValidada:
         assert sensor.unique_id == (
             "optimizador_bateria_omie_familia_validada"
         )
+    @pytest.mark.asyncio
+    async def test_ha_entities_soc_ts(self, hass):
+        """0.15.1: soc_ts recoge el last_updated de la entidad de SOC
+        (detecta el congelamiento por caída del datalogger)."""
+        from datetime import UTC, timedelta
+
+        congelado = datetime.now(tz=UTC) - timedelta(hours=2)
+        estado = MagicMock()
+        estado.state = "95"
+        estado.last_updated = congelado
+
+        gestor = GestorValidacion(hass, store=StoreFake())
+        hass.states.get = MagicMock(return_value=estado)
+        entry = _entry(
+            {
+                CONF_TELEMETRY_SOURCE: TELEMETRY_SOURCE_HA_ENTITIES,
+                CONF_ENTITY_ID_SOC_BATERIA: "sensor.soc",
+            }
+        )
+        coordinador = CoordinadorTelemetria(hass, None, gestor, entry)
+
+        telemetria = await coordinador._async_update_data()
+
+        assert telemetria.soc == pytest.approx(95.0)
+        assert telemetria.soc_ts == congelado
+
+    @pytest.mark.asyncio
+    async def test_ha_entities_soc_ts_sin_entidad(self, hass):
+        """0.15.1: entidad inexistente → soc_ts None (sin inventar)."""
+        gestor = GestorValidacion(hass, store=StoreFake())
+        hass.states.get = MagicMock(return_value=None)
+        entry = _entry(
+            {
+                CONF_TELEMETRY_SOURCE: TELEMETRY_SOURCE_HA_ENTITIES,
+            }
+        )
+        coordinador = CoordinadorTelemetria(hass, None, gestor, entry)
+
+        telemetria = await coordinador._async_update_data()
+
+        assert telemetria.soc_ts is None

@@ -82,6 +82,15 @@ COOLDOWN_REPLAN_COBERTURA_S = 2700.0
 # Ritmo excesivo (F6/B): disparar tras 2 muestreos consecutivos por
 # encima del factor previsto (30 min entre muestreos → ~1 h)
 RITMO_MUESTRAS_DISPARO = 2
+# Cooldown del respaldo periódico de desviación (0.15.1): el listener
+# de eventos es el detector primario; este respaldo garantiza el
+# replan aunque los eventos no lleguen (entidad congelada por caída
+# del datalogger). Tras el replan el previsto converge y no repite.
+COOLDOWN_RESPALDO_DESVIACION_S = 300.0
+# Umbral de SOC congelado (0.15.1): la entidad no cambia de estado
+# (datalogger caído) → el dato es viejo aunque la telemetría lo selle
+# con la hora del sondeo. WARNING audible en el check periódico.
+SOC_CONGELADO_AVISO_S = 900.0
 
 
 def _tramo_actual_index(ahora: datetime | None = None) -> int:
@@ -121,6 +130,8 @@ class CoordinadorPlan:
         self._adoptado_previo: bool | None = None
         # F6/B: check de cobertura (caso de uso U1)
         self._ts_replan_cobertura: datetime | None = None
+        # 0.15.1: respaldo periódico de desviación (entidad congelada)
+        self._ts_replan_desviacion: datetime | None = None
         self._ritmo_excesos = 0
         # F6/B: bug 2 — existencia del entity_id de SOC verificada al arranque
         self.replan_soc_activo = False
@@ -236,6 +247,53 @@ class CoordinadorPlan:
             return
         ahora = datetime.now().astimezone()
         hoy = ahora.date()
+
+        # 0.15.1 — SOC congelado (datalogger caído): la entidad no
+        # cambia de estado, la telemetría sella con la hora del sondeo
+        # y el listener de eventos enmudece. Aviso audible.
+        soc_ts = getattr(telemetria, "soc_ts", None)
+        if soc_ts is not None:
+            edad = (ahora - telemetria.soc_ts).total_seconds()
+            if edad > SOC_CONGELADO_AVISO_S:
+                _LOGGER.warning(
+                    "SOC congelado desde hace %.0f min (%.1f %% sin "
+                    "actualizaciones de la entidad): los datos del "
+                    "plan pueden ser ficticios (¿datalogger caído?)",
+                    edad / 60,
+                    telemetria.soc,
+                )
+
+        # 0.15.1 — respaldo periódico de desviación: el listener de
+        # eventos es el detector primario (D11), pero una entidad
+        # congelada no emite eventos. Comparación por valor cada ciclo
+        # aunque no haya habido cambios de estado.
+        tramo_actual = self.tramo_actual()
+        if tramo_actual is not None:
+            umbral = float(self.entry.data.get(
+                CONF_DESVIACION_SOC_REPLAN, DEFAULT_DESVIACION_SOC_REPLAN
+            ))
+            deviado = (
+                abs(telemetria.soc - tramo_actual.soc_previsto_pct) > umbral
+            )
+            en_enfriamiento = (
+                self._ts_replan_desviacion is not None
+                and (
+                    ahora - self._ts_replan_desviacion
+                ).total_seconds() < COOLDOWN_RESPALDO_DESVIACION_S
+            )
+            if deviado and not en_enfriamiento:
+                self._ts_replan_desviacion = ahora
+                _LOGGER.warning(
+                    "SOC real %.1f %% desviado del previsto %.1f %% "
+                    "(umbral %.0f %%): replanificación por respaldo "
+                    "periódico (el listener de eventos no disparó)",
+                    telemetria.soc,
+                    tramo_actual.soc_previsto_pct,
+                    umbral,
+                )
+                await self.async_recalcular("desviacion_soc")
+                # Plan nuevo: el resto del check, en el próximo ciclo
+                return
 
         # Ventana: inicio del PRÓXIMO tramo CARGA_RED del plan
         ventana: datetime | None = None

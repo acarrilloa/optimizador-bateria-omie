@@ -207,6 +207,15 @@ class SensorPlan(EntidadBasePlan):
         atributos["replan_soc_activo"] = (
             self._coordinador.replan_soc_activo
         )
+        # 0.15.1: edad del dato de SOC (last_updated de la entidad);
+        # grande = congelado por caída del datalogger
+        telemetria = self._coordinador.coordinador_telemetria.data
+        soc_ts = getattr(telemetria, "soc_ts", None) if telemetria else None
+        if soc_ts is not None:
+            edad_min = (
+                datetime.now().astimezone() - soc_ts
+            ).total_seconds() / 60
+            atributos["soc_edad_min"] = round(edad_min)
         if tramo is not None:
             atributos["tramo_actual"] = tramo.hora
             atributos["soc_previsto_pct"] = tramo.soc_previsto_pct

@@ -57,6 +57,10 @@ class TelemetriaInversor:
     temperatura_inversor: float | None
     temperatura_bateria: float | None
     ts_actualizacion: datetime
+    # 0.15.1: ``last_updated`` de la entidad de SOC (UTC). Detecta el
+    # SOC congelado por caída del datalogger: ``ts_actualizacion`` es
+    # la hora del SONDEO y no distingue un valor viejo repetido.
+    soc_ts: datetime | None = None
 
 
 class GestorValidacion:
@@ -266,6 +270,14 @@ class CoordinadorTelemetria(DataUpdateCoordinator[TelemetriaInversor]):
                 _LOGGER.warning("Estado no numérico en %s: %r", entity_id, estado.state)
                 return None
 
+        def _ts_entidad(clave: str) -> datetime | None:
+            """Last_updated de la entidad (None si no se puede ver)."""
+            entity_id = self.config_entry.data.get(clave, "")
+            if not entity_id:
+                return None
+            estado = self.hass.states.get(entity_id)
+            return None if estado is None else estado.last_updated
+
         return TelemetriaInversor(
             soc=_valor(CONF_ENTITY_ID_SOC_BATERIA),
             potencia_bateria=_valor(CONF_ENTITY_ID_POTENCIA_BATERIA),
@@ -278,4 +290,5 @@ class CoordinadorTelemetria(DataUpdateCoordinator[TelemetriaInversor]):
             temperatura_inversor=_valor(CONF_ENTITY_ID_TEMP_INVERSOR),
             temperatura_bateria=_valor(CONF_ENTITY_ID_TEMP_BATERIA),
             ts_actualizacion=datetime.now(tz=UTC),
+            soc_ts=_ts_entidad(CONF_ENTITY_ID_SOC_BATERIA),
         )
