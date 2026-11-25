@@ -20,9 +20,9 @@ views:
                 name: Control activo
               - entity: switch.inversor_optimizador_bateria_omie_usar_planificador_lp
                 name: Planificador LP
-              - entity: sensor.inversor_optimizador_bateria_omie_estado_control
+              - entity: sensor.inversor_optimizador_bateria_omie_estado_de_control
                 name: Estado de control
-              - entity: number.inversor_optimizador_bateria_omie_bloque_minutos
+              - entity: number.inversor_optimizador_bateria_omie_minutos_de_bloque_de_compromiso
                 name: Bloque de compromiso (min)
 
           - type: markdown

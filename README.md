@@ -433,7 +433,7 @@ automation:
   - alias: "Aviso fallback del control"
     trigger:
       - platform: state
-        entity_id: sensor.inversor_optimizador_bateria_omie_estado_control
+        entity_id: sensor.inversor_optimizador_bateria_omie_estado_de_control
         to: "fallback_bloqueado"
     action:
       - action: notify.notify

@@ -28,7 +28,7 @@ Tres vistas listas para copiar en un dashboard Lovelace en **modo YAML**:
   min); no depende de la integración OMIE de plantillas.
 - La tabla de próximos tramos renderiza con Jinja el atributo `plan` del
   sensor (ya compactado desde 0.10.2, solo tramos pendientes).
-- Los badges de estado muestran `estado_control` con los estados de
+- Los badges de estado muestran `estado_de_control` con los estados de
   0.13.0: `gradual` ya no aparece como `dry_run`.
 
 ## Automatización de informe diario (opcional)
