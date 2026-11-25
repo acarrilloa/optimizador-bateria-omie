@@ -210,6 +210,15 @@ ESTADO_CONTROL_FALLBACK_BLOQUEADO = "fallback_bloqueado"
 # Bloque de compromiso (D-F5.3.1): el plan periódico solo se redecide
 # en límites de bloque (alineados a medianoche); el bloque en curso se
 # congela salvo replan por seguridad (desviacion_soc).
+
+# Voluntad persistente de control (0.15.4): el switch guarda la
+# intención del usuario en entry.data; tras cada arranque el control
+# se auto-activa salvo apagado voluntario o fallback previo.
+CONF_CONTROL_DESEADO = "control_deseado"
+DEFAULT_CONTROL_DESEADO = True
+AUTO_ACTIVACION_REINTENTOS = 12
+AUTO_ACTIVACION_INTERVALO_S = 300
+NOTIFICACION_CONTROL_OFF = f"{DOMAIN}_control_desactivado"
 CONF_BLOQUE_MINUTOS = "bloque_minutos"
 DEFAULT_BLOQUE_MINUTOS = 60  # 15–120, múltiplos de 15
 NUMBER_BLOQUE_MINUTOS = f"{DOMAIN}_bloque_minutos"

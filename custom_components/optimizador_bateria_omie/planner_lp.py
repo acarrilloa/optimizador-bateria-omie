@@ -30,7 +30,7 @@ Selección en caliente (D-F5.2): ``entry.data["algoritmo_planificador"]``
 = ``greedy`` | ``lp``; si el LP falla, el ``CoordinadorPlan`` recurre
 al greedy — nunca se queda sin plan.
 """
-# versión 0.15.3
+# versión 0.15.4
 
 import logging
 import math

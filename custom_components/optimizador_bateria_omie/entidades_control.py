@@ -78,7 +78,12 @@ def _device_info() -> DeviceInfo:
 
 
 class SwitchControlActivo(SwitchEntity):
-    """Habilitador de las escrituras reales del executor (default OFF)."""
+    """Habilitador de las escrituras reales del executor.
+
+    Desde 0.15.4 la voluntad es persistente: tras un arranque el
+    control se auto-activa salvo que el apagado fuese voluntario
+    (queda notificado y persiste) o un fallback (intervención humana).
+    """
 
     _attr_unique_id = SWITCH_CONTROL_ACTIVO
     _attr_name = "Control activo"

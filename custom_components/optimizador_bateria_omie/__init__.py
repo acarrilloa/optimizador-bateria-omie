@@ -197,8 +197,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await coordinador_plan.async_setup()
 
     # ── F4: executor de control (vía servicios de Solarman) ──
-    # Con control_activo OFF (default) el executor solo simula: ninguna
-    # escritura real al inversor hasta que el usuario lo habilite.
+    # Auto-activación tras arranque (0.15.4): la voluntad del usuario
+    # persiste en entry.data; apagar es voluntario y notificado, y un
+    # fallback sigue exigiendo reactivación manual.
     ejecutor = EjecutorControl(
         hass,
         entry,

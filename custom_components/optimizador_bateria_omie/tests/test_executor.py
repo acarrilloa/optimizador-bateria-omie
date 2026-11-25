@@ -1678,3 +1678,101 @@ class TestTablaTouF6:
 
         llamada = hass.services.async_call.call_args
         assert llamada.args[0] == "persistent_notification"
+
+
+class TestControlPersistente0154:
+    """0.15.4: ON tras arranque; apagado voluntario y fallback persisten."""
+
+    @pytest.mark.asyncio
+    async def test_auto_activacion_en_arranque(
+        self, hass, mapa, escritor
+    ):
+        """Sin clave en entry.data la voluntad es ON: se auto-activa."""
+        executor = _executor(hass, mapa, escritor, _tramo(ACCION_MANTENER))
+        assert executor._control_deseado is True
+
+        await executor._async_auto_activacion()
+
+        assert executor.control_activo is True
+        # Activación atómica: escribió los límites SOC (217/218)
+        escrituras = _escrituras(escritor)
+        assert 217 in escrituras and 218 in escrituras
+        # La voluntad ON queda persistida en entry.data
+        llamada = hass.config_entries.async_update_entry.call_args
+        assert llamada.kwargs["data"]["control_deseado"] is True
+
+    @pytest.mark.asyncio
+    async def test_arranque_no_activa_si_apagado_voluntario(
+        self, hass, mapa, escritor
+    ):
+        executor = _executor(
+            hass, mapa, escritor, _tramo(ACCION_MANTENER),
+            entry_data={"control_deseado": False},
+        )
+
+        await executor._async_auto_activacion()
+
+        assert executor.control_activo is False
+        escritor.escribir.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_apagado_voluntario_persiste_y_notifica(
+        self, hass, mapa, escritor
+    ):
+        """Apagar es manifiesto: persiste OFF y notifica."""
+        executor = _executor(hass, mapa, escritor, _tramo(ACCION_MANTENER))
+        await executor.async_set_control_activo(True)
+        hass.config_entries.async_update_entry.call_args_list.clear()
+        hass.services.async_call.call_args_list.clear()
+
+        await executor.async_set_control_activo(False)
+
+        assert executor._control_deseado is False
+        llamada = hass.config_entries.async_update_entry.call_args
+        assert llamada.kwargs["data"]["control_deseado"] is False
+        creaciones = [
+            c for c in hass.services.async_call.call_args_list
+            if c.args[:2] == ("persistent_notification", "create")
+            and c.args[2]["notification_id"]
+            == "optimizador_bateria_omie_control_desactivado"
+        ]
+        assert len(creaciones) == 1
+
+    @pytest.mark.asyncio
+    async def test_fallback_clava_deseado_off(
+        self, hass, mapa, escritor
+    ):
+        """Un reinicio NO reactiva tras fallback: requiere intervención."""
+        executor = _executor(hass, mapa, escritor, _tramo(ACCION_MANTENER))
+        await executor.async_set_control_activo(True)
+        hass.config_entries.async_update_entry.call_args_list.clear()
+
+        await executor._async_fallback("test")
+
+        assert executor.control_activo is False
+        assert executor._control_deseado is False
+        llamada = hass.config_entries.async_update_entry.call_args
+        assert llamada.kwargs["data"]["control_deseado"] is False
+
+    @pytest.mark.asyncio
+    async def test_reintenta_si_solarman_no_listo(
+        self, hass, mapa, escritor
+    ):
+        """La carrera con Solarman: primera activación falla, segunda OK."""
+        executor = _executor(hass, mapa, escritor, _tramo(ACCION_MANTENER))
+        real = executor._escribir_limites_soc
+        llamadas = {"n": 0}
+
+        async def _limites_ok_despues():
+            llamadas["n"] += 1
+            if llamadas["n"] == 1:
+                raise ErrorEscrituraSolarman("solarman aún no listo")
+            await real()
+
+        with patch.object(
+            executor, "_escribir_limites_soc", side_effect=_limites_ok_despues
+        ):
+            await executor._async_auto_activacion()
+
+        assert llamadas["n"] == 2
+        assert executor.control_activo is True

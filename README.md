@@ -1,6 +1,6 @@
 # Optimizador Batería OMIE
 
-![Versión](https://img.shields.io/badge/versión-0.15.3-blue)
+![Versión](https://img.shields.io/badge/versión-0.15.4-blue)
 ![F2](https://img.shields.io/badge/F2-telemetría-completada-brightgreen)
 ![F3](https://img.shields.io/badge/F3-plan%20dry--run-completada-brightgreen)
 ![F4](https://img.shields.io/badge/F4-control%20real-completada-brightgreen)
@@ -293,7 +293,7 @@ Ocho sensores: `soc_bateria`, `potencia_bateria` (**+descarga/−carga**), `corr
 
 ### Control (F4) ✅
 
-- `switch.*_control_activo` — habilitador del control real, **default OFF**. Con OFF todo se simula (dry-run) y se audita; con ON se escribe bajo salvaguardas. 3 fallos de verificación → OFF automático + notificación persistente (reactivación manual).
+- `switch.*_control_activo` — habilitador del control real. Desde **0.15.4** la voluntad es persistente: tras cada arranque se auto-activa (reintentos ante la carrera de arranque de Solarman) salvo que el apagado fuese **voluntario** —queda notificado y persiste OFF tras los reinicios— o un **fallback** (3 fallos de verificación → OFF automático + notificación; reactivación manual obligada, también tras reiniciar). Con OFF todo se simula (dry-run) y se audita; con ON se escribe bajo salvaguardas.
 - `sensor.*_estado_control` (diagnóstico) — `inactivo` (switch OFF) / `dry_run` (ON pero la acción actual se simula por gradual) / `activo` (escribiendo de verdad) / `fallback_bloqueado` (requiere intervención). Atributos: motivo, fallos consecutivos, escrituras de la última hora, último verify, modo manual.
 - **Nueve `number` calientes** — escriben en `entry.data` y disparan recálculo del plan en ≤ 60 s: `precio_max_compra`, `precio_min_venta`, `margen_arbitraje`, `soc_min`, `soc_max`, `potencia_max_carga`, `potencia_max_descarga`, `eficiencia_round_trip`, `precio_excedentes`.
 

@@ -22,7 +22,7 @@ jitter de Solarman ya no derriba el estado); las escrituras se cortan
 desde la PRIMERA observación y el fallback solo llega tras 600 s de
 caída continuada con carga activa.
 """
-# versión 0.15.3
+# versión 0.15.4
 
 import asyncio
 import logging
@@ -37,9 +37,12 @@ from homeassistant.helpers.event import async_track_time_change
 
 from custom_components.optimizador_bateria_omie.const import (
     ACCIONES_MANUALES,
+    AUTO_ACTIVACION_INTERVALO_S,
+    AUTO_ACTIVACION_REINTENTOS,
     CONF_ACTUADOR_TOU,
     CONF_ARRANQUE_CARGA_RED_SOC,
     CONF_ARRANQUE_CARGA_RED_V,
+    CONF_CONTROL_DESEADO,
     CONF_DESCARGA_MINIMA_BACKUP_A,
     CONF_DEVICE_ID_SOLARMAN,
     CONF_ENTITY_ID_POTENCIA_RED,
@@ -61,6 +64,7 @@ from custom_components.optimizador_bateria_omie.const import (
     DEFAULT_ACTUADOR_TOU,
     DEFAULT_ARRANQUE_CARGA_RED_SOC,
     DEFAULT_ARRANQUE_CARGA_RED_V,
+    DEFAULT_CONTROL_DESEADO,
     DEFAULT_DESCARGA_MINIMA_BACKUP_A,
     DEFAULT_DEVICE_ID_SOLARMAN,
     DEFAULT_LATENCIA_VERIFY_S,
@@ -85,6 +89,7 @@ from custom_components.optimizador_bateria_omie.const import (
     GUARD_CORTE,
     GUARD_REDUCCION,
     MULTIPLICADOR_WATCHDOG,
+    NOTIFICACION_CONTROL_OFF,
     TIMEOUT_TELEMETRIA_S,
     TOU_FLAG_CARGA,
     TOU_FLAG_VENTA,
@@ -366,6 +371,13 @@ class EjecutorControl:
             hass, entry.data.get(CONF_DEVICE_ID_SOLARMAN, "")
         )
         self._control_activo = False
+        # 0.15.4: la voluntad del usuario persiste en entry.data; tras
+        # un arranque el control se auto-activa salvo apagado voluntario
+        # o fallback previo (intervención humana, regla dura del SPEC).
+        self._control_deseado = bool(
+            entry.data.get(CONF_CONTROL_DESEADO, DEFAULT_CONTROL_DESEADO)
+        )
+        self._tarea_auto = None
         self._estado = ESTADO_CONTROL_INACTIVO
         self._motivo_estado = "arranque"
         self._estado_simulado: str | None = None
@@ -427,6 +439,12 @@ class EjecutorControl:
                 minute=range(0, 60, 15),
                 second=0,
             )
+        # 0.15.4: auto-activación tras arranque si el usuario dejó el
+        # control ON (reintenta mientras Solarman no responda)
+        if self._control_deseado and not self._control_activo:
+            self._tarea_auto = self.hass.async_create_task(
+                self._async_auto_activacion()
+            )
         await self.async_aplicar_tramo("arranque")
 
     def _async_plan_cambiado(self) -> None:
@@ -441,6 +459,9 @@ class EjecutorControl:
         if self._cancelar_vigilante is not None:
             self._cancelar_vigilante()
             self._cancelar_vigilante = None
+        if self._tarea_auto is not None and not self._tarea_auto.done():
+            self._tarea_auto.cancel()
+        self._tarea_auto = None
         self._listeners.clear()
 
     # ─── Parámetros ───
@@ -1703,6 +1724,10 @@ class EjecutorControl:
                 err,
             )
         self._control_activo = False
+        # 0.15.4: el fallback clava también la voluntad — un reinicio
+        # NO reactiva el control: se exige intervención humana
+        self._control_deseado = False
+        self._persistir_control_deseado(False)
         self._fallos_consecutivos = 0
         try:
             await self.hass.services.async_call(
@@ -1725,6 +1750,74 @@ class EjecutorControl:
         self._notificar()
 
     # ─── Control activo ───
+
+    def _persistir_control_deseado(self, valor: bool) -> None:
+        """Guarda la voluntad del usuario en ``entry.data`` (0.15.4)."""
+        if self.entry.data.get(CONF_CONTROL_DESEADO) == valor:
+            return
+        self.hass.config_entries.async_update_entry(
+            self.entry,
+            data={**self.entry.data, CONF_CONTROL_DESEADO: valor},
+        )
+
+    async def _async_auto_activacion(self) -> None:
+        """Auto-activa el control tras el arranque (0.15.4).
+
+        Reintenta mientras Solarman no responda (la carrera de arranque
+        ya dejó más de una activación caída): máximo
+        ``AUTO_ACTIVACION_REINTENTOS`` cada ``AUTO_ACTIVACION_INTERVALO_S``.
+        Si el usuario apaga o llega un fallback (``control_deseado``
+        False o bandera activa), el bucle termina sin escribir nada.
+        """
+        for intento in range(1, AUTO_ACTIVACION_REINTENTOS + 1):
+            if not self._control_deseado or self._control_activo:
+                return
+            try:
+                await self.async_set_control_activo(True)
+                _LOGGER.info(
+                    "control_activo auto-activado tras el arranque "
+                    "(intento %d)",
+                    intento,
+                )
+                return
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.warning(
+                    "Auto-activación tras arranque fallida (intento "
+                    "%d/%d): %s",
+                    intento,
+                    AUTO_ACTIVACION_REINTENTOS,
+                    err,
+                )
+                await asyncio.sleep(AUTO_ACTIVACION_INTERVALO_S)
+
+    async def _async_notificar_apagado(self) -> None:
+        """Apagado manifiestamente voluntario: visible y persistente."""
+        _LOGGER.warning(
+            "control_activo apagado MANUALMENTE: no se escribirá en el "
+            "inversor y quedará OFF tras cada reinicio hasta que se "
+            "reactive"
+        )
+        try:
+            await self.hass.services.async_call(
+                "persistent_notification",
+                "create",
+                {
+                    "title": (
+                        "Optimizador Batería OMIE: control desactivado"
+                    ),
+                    "message": (
+                        "Apagado manual del control: no se escribirá en "
+                        "el inversor y seguirá OFF tras cada reinicio "
+                        "hasta que reacciones el switch."
+                    ),
+                    "notification_id": NOTIFICACION_CONTROL_OFF,
+                },
+                blocking=True,
+            )
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning(
+                "No se pudo emitir la notificación de apagado: %s", err
+            )
 
     async def async_set_control_activo(self, activo: bool) -> None:
         """Enciende/apaga el control real de escrituras (D18).
@@ -1755,13 +1848,19 @@ class EjecutorControl:
                 self._actualizar_estado()
                 raise
             self._control_activo = True
+            self._control_deseado = True
+            self._persistir_control_deseado(True)
             _LOGGER.info(
                 "control_activo ON: escrituras reales habilitadas "
                 "(bajo salvaguardas)"
             )
         else:
             self._control_activo = False
+            # 0.15.4: apagado voluntario — persiste tras los reinicios
+            self._control_deseado = False
+            self._persistir_control_deseado(False)
             _LOGGER.info("control_activo OFF: modo dry-run forzado")
+            await self._async_notificar_apagado()
         await self.async_aplicar_tramo("control_activo")
 
     async def async_actualizar_limites_soc(self) -> None:
