@@ -7,7 +7,7 @@ compromiso, D-F5.3.1), al togglear ``festivo_hoy``, por desviación de
 SOC y con el servicio ``regenerate_plan``. **Nunca escribe en el
 inversor.**
 """
-# versión 0.13.0
+# versión 0.16.0
 
 import logging
 from collections.abc import Callable
@@ -85,11 +85,12 @@ COOLDOWN_REPLAN_COBERTURA_S = 2700.0
 # Ritmo excesivo (F6/B): disparar tras 2 muestreos consecutivos por
 # encima del factor previsto (30 min entre muestreos → ~1 h)
 RITMO_MUESTRAS_DISPARO = 2
-# Cooldown del respaldo periódico de desviación (0.15.1): el listener
-# de eventos es el detector primario; este respaldo garantiza el
-# replan aunque los eventos no lleguen (entidad congelada por caída
-# del datalogger). Tras el replan el previsto converge y no repite.
-COOLDOWN_RESPALDO_DESVIACION_S = 300.0
+# Cooldown compartido de desviación (0.16): listener de eventos y
+# respaldo periódico comparten 15 min — una desviación persistente
+# (carga que no llega) provoca eventos constantes y sin límite se
+# replanificaría en cada polling del datalogger. El respaldo corre
+# cada 5 min: la reacción decae a ≤ 15 min aunque el listener muera.
+COOLDOWN_DESVIACION_S = 900.0
 # Umbral de SOC congelado (0.15.1): la entidad no cambia de estado
 # (datalogger caído) → el dato es viejo aunque la telemetría lo selle
 # con la hora del sondeo. WARNING audible en el check periódico.
@@ -138,6 +139,9 @@ class CoordinadorPlan:
         self._ritmo_excesos = 0
         # F6/B: bug 2 — existencia del entity_id de SOC verificada al arranque
         self.replan_soc_activo = False
+        # 0.16: diagnóstico del listener — eventos recibidos desde el
+        # arranque; 0 con SOC fresco = la entidad no emite cambios
+        self._eventos_soc = 0
 
     # ─── Registro ───
 
@@ -228,7 +232,7 @@ class CoordinadorPlan:
             async_track_time_change(
                 self.hass,
                 self._async_cobertura_periodica,
-                minute=(0, 30),
+                minute=range(0, 60, 5),
                 second=0,
             )
         )
@@ -306,17 +310,19 @@ class CoordinadorPlan:
                 self._ts_replan_desviacion is not None
                 and (
                     ahora - self._ts_replan_desviacion
-                ).total_seconds() < COOLDOWN_RESPALDO_DESVIACION_S
+                ).total_seconds() < COOLDOWN_DESVIACION_S
             )
             if deviado and not en_enfriamiento:
                 self._ts_replan_desviacion = ahora
                 _LOGGER.warning(
                     "SOC real %.1f %% desviado del previsto %.1f %% "
                     "(umbral %.0f %%): replanificación por respaldo "
-                    "periódico (el listener de eventos no disparó)",
+                    "periódico (eventos del listener desde el arranque: "
+                    "%d)",
                     telemetria.soc,
                     tramo_actual.soc_previsto_pct,
                     umbral,
+                    self._eventos_soc,
                 )
                 await self.async_recalcular("desviacion_soc")
                 # Plan nuevo: el resto del check, en el próximo ciclo
@@ -533,22 +539,41 @@ class CoordinadorPlan:
         tramo = self.tramo_actual()
         if tramo is None:
             return
+        self._eventos_soc += 1
+        if self._eventos_soc == 1:
+            _LOGGER.info(
+                "Listener de SOC operativo: primer evento recibido de %s",
+                nuevo.entity_id,
+            )
         umbral = float(
             self.entry.data.get(
                 CONF_DESVIACION_SOC_REPLAN, DEFAULT_DESVIACION_SOC_REPLAN
             )
         )
-        if abs(soc - tramo.soc_previsto_pct) > umbral:
-            _LOGGER.info(
-                "SOC real %.1f %% desviado del previsto %.1f %% "
-                "(umbral %.0f %%): replanificando",
-                soc,
-                tramo.soc_previsto_pct,
-                umbral,
-            )
-            self.hass.async_create_task(
-                self.async_recalcular("desviacion_soc")
-            )
+        if abs(soc - tramo.soc_previsto_pct) <= umbral:
+            return
+        # 0.16: cooldown compartido con el respaldo — una desviación
+        # persistente (carga que no llega) provoca eventos constantes
+        # y sin él se replanificaría en cada polling del datalogger
+        ahora = datetime.now().astimezone()
+        if (
+            self._ts_replan_desviacion is not None
+            and (ahora - self._ts_replan_desviacion).total_seconds()
+            < COOLDOWN_DESVIACION_S
+        ):
+            return
+        self._ts_replan_desviacion = ahora
+        _LOGGER.info(
+            "SOC real %.1f %% desviado del previsto %.1f %% "
+            "(umbral %.0f %%): replanificando (evento, n.º %d)",
+            soc,
+            tramo.soc_previsto_pct,
+            umbral,
+            self._eventos_soc,
+        )
+        self.hass.async_create_task(
+            self.async_recalcular("desviacion_soc")
+        )
 
     async def async_descargar(self) -> None:
         """Cancela los listeners al descargar la entrada."""
@@ -897,6 +922,11 @@ class CoordinadorPlan:
     def plan(self) -> Plan | None:
         """Plan vigente."""
         return self._plan
+
+    @property
+    def eventos_soc(self) -> int:
+        """Eventos del listener de SOC desde el arranque (0.16)."""
+        return self._eventos_soc
 
     @property
     def prediccion_hoy(self) -> PrediccionDia | None:

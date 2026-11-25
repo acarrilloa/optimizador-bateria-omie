@@ -22,7 +22,7 @@ jitter de Solarman ya no derriba el estado); las escrituras se cortan
 desde la PRIMERA observación y el fallback solo llega tras 600 s de
 caída continuada con carga activa.
 """
-# versión 0.15.4
+# versión 0.16.0
 
 import asyncio
 import logging
@@ -910,7 +910,16 @@ class EjecutorControl:
         assert set(tabla) == set(direcciones), (
             "tabla ToU fuera del rango esperado 250-279"
         )
-        if not self._presupuesto_tablas():
+        if (
+            not self._presupuesto_tablas()
+            # 0.16: limpiar la tabla (AUTOCONSUMO/MANTENER) es el
+            # estado SEGURO — un segmento de venta caducado retiene la
+            # batería hasta el día siguiente (incidente 25-nov 23:50:
+            # import de la casa con el 48 % en batería) y no debe
+            # esperar presupuesto: la punta consumió los 2/h y el
+            # "aplazada" dejaba el segmento muerto en el inversor
+            and not all(v == 0 for v in tabla.values())
+        ):
             _LOGGER.warning(
                 "Presupuesto de tablas ToU agotado: %d/%d en la última "
                 "hora; el tramo vuelve a intentarse en su momento",
@@ -1263,9 +1272,19 @@ class EjecutorControl:
                 addr_red: 0,
                 addr_habilitar: 0,
             }
-        margen_w = contratada * GUARD_REDUCCION - importacion
+        # 0.16 — recorte proporcional al exceso: solo los amperios
+        # que sobran para volver a la banda del 95 %. La banda de
+        # reducción NO es un corte: con importación ya dentro de la
+        # banda (caso del 25-nov 15:00–16:00) la fórmula antigua daba
+        # margen negativo → 0 A → ping-pong 0 A / 5 kW tramo a tramo
+        # y la carga de la tarde quedó a medias.
+        exceso_w = importacion - contratada * GUARD_REDUCCION
+        objetivo_a = int(objetivos.get(addr_red, 0))
+        deseada_w = max(
+            0.0, objetivo_a * self._voltaje_nominal() - exceso_w
+        )
         reducida = self._recortar_corriente(
-            "corriente_carga_red", margen_w / self._voltaje_nominal()
+            "corriente_carga_red", deseada_w / self._voltaje_nominal()
         )
         self._guard_actual = (
             f"reducción: importación {importacion:.0f} W al "
@@ -1277,7 +1296,7 @@ class EjecutorControl:
             fraccion * 100,
             reducida,
         )
-        return {**objetivos, addr_red: min(objetivos.get(addr_red, 0), reducida)}
+        return {**objetivos, addr_red: min(objetivo_a, reducida)}
 
     def _escrituras_ultima_hora(self) -> int:
         """Escrituras reales en la ventana deslizante de 1 h (D6)."""

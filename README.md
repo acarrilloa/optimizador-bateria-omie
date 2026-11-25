@@ -1,6 +1,6 @@
 # Optimizador Batería OMIE
 
-![Versión](https://img.shields.io/badge/versión-0.15.4-blue)
+![Versión](https://img.shields.io/badge/versión-0.16.0-blue)
 ![F2](https://img.shields.io/badge/F2-telemetría-completada-brightgreen)
 ![F3](https://img.shields.io/badge/F3-plan%20dry--run-completada-brightgreen)
 ![F4](https://img.shields.io/badge/F4-control%20real-completada-brightgreen)
@@ -60,7 +60,7 @@ Aplica el plan de F3 **escribiendo en el inversor** con todas las salvaguardas. 
 - **Write-verify**: tras cada escritura real, espera configurable (`latencia_verify_s`, default 3 s) y relectura vía `solarman.read_multiple_holding_registers`. Si la relectura falla → verificación *soft* marcada `parcial`. **3 fallos consecutivos → `fallback`**: valores seguros una vez, `control_activo` a OFF automático + notificación persistente. Reactivación solo manual.
 - **Rate limiter**: máx. **12 escrituras/hora** reales (configurable 1–48), con **idempotencia** (no se reescriben valores ya aplicados). Superado el límite → aplaza al siguiente tramo con WARNING.
 - **Watchdog**: telemetría obsoleta (> 2× intervalo) o plan ausente en cambio de tramo → no escribe; si hay carga desde red activa → fallback.
-- **Guard de potencia contratada**: importación > 95 % de `potencia_contratada` (5,75 kW) → reduce la corriente de carga; ≥ 100 % → 0 A inmediato. Fuente preferente: `entity_id_potencia_red` (registro Deye 169, convención >0 = importación); sin ella, cálculo derivado desde telemetría.
+- **Guard de potencia contratada**: importación > 95 % de `potencia_contratada` (5,75 kW) → reduce la corriente de carga proporcional al exceso (0.16.0); ≥ 100 % → 0 A inmediato. Fuente preferente: `entity_id_potencia_red` (registro Deye 169, convención >0 = importación); sin ella, cálculo derivado desde telemetría.
 - **Bloqueo por fallo del inversor**: si alguna entidad de `entity_ids_fallo` (registros Deye 103–106, códigos F07–F64) es ≠ 0 → no se escribe; con carga activa → fallback.
 - **Activación gradual** (`modo_activacion`, default `gradual`): solo se ejecutan de verdad las `CARGA_RED` en tramos **valle 2.0TD**; `VENTA_RED` y la carga fuera de valle se simulan y auditan. El modo `completo` desbloquea todo el plan. (La venta real vía TOU Selling del Deye queda para una fase posterior; en F4, `VENTA_RED` solo fija el límite de descarga.)
 - **Servicios** `force_mode(mode, until)` y `release_manual`: modo manual (`AUTOCONSUMO`/`CARGA_RED`/`VENTA_RED`/`MANTENER`) que respeta **todas** las salvaguardas y expira solo en `until`; en memoria (un reinicio de HA vuelve al plan).

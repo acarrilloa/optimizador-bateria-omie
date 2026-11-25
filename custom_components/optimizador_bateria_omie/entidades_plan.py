@@ -242,6 +242,9 @@ class SensorPlan(EntidadBasePlan):
         atributos["replan_soc_activo"] = (
             self._coordinador.replan_soc_activo
         )
+        # 0.16: contador de eventos del listener — 0 con SOC actualizado
+        # delata que la entidad no emite_changes (diagnóstico del listener)
+        atributos["eventos_soc"] = self._coordinador.eventos_soc
         # 0.15.1: edad del dato de SOC (last_updated de la entidad);
         # grande = congelado por caída del datalogger
         telemetria = self._coordinador.coordinador_telemetria.data

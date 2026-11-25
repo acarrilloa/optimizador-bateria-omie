@@ -1011,7 +1011,10 @@ class TestGuardPotencia:
 
     @pytest.mark.asyncio
     async def test_guard_95_reduce_corriente(self, hass, mapa, escritor):
-        # 5700 W de 5750 W → 99,1 % > 95 %: margen 0,95×5750−5700 = −225 W
+        # 5700 W de 5750 W → 99,1 % > 95 %: exceso sobre la banda
+        # = 5700 − 0,95×5750 = 237,5 W → objetivo 4096 − 237,5 W
+        # = 3858,5 W / 51,2 V ≈ 75 A (0.16: reducción proporcional,
+        # no corte: el ping-pong 0 A / 5 kW dejó la carga a medias)
         self._estado_red(hass, "5700")
         executor = _executor(
             hass,
@@ -1024,7 +1027,26 @@ class TestGuardPotencia:
 
         await executor.async_aplicar_tramo("test")
 
-        # margen negativo → corriente reducida a 0
+        assert escritor._leidos[230] == 75
+
+    @pytest.mark.asyncio
+    async def test_guard_reduce_a_cero_si_exceso_come_el_objetivo(
+        self, hass, mapa, escritor
+    ):
+        """Objetivo de carga pequeño: el exceso lo consume entero."""
+        self._estado_red(hass, "5700")  # exceso 237,5 W > 245 W objetivo
+        executor = _executor(
+            hass,
+            mapa,
+            escritor,
+            _tramo(ACCION_CARGA_RED, carga_red_w=245.0),
+            entry_data={"entity_id_potencia_red": "sensor.red"},
+        )
+        executor._control_activo = True
+
+        await executor.async_aplicar_tramo("test")
+
+        # 5 A objetivo − 237,5 W de exceso → 0 A
         assert escritor._leidos[230] == 0
 
     @pytest.mark.asyncio
@@ -1059,7 +1081,8 @@ class TestGuardPotencia:
 
         await executor.async_aplicar_tramo("test")
 
-        assert escritor._leidos[230] == 0
+        # 0.16: reducción proporcional (igual que con entidad)
+        assert escritor._leidos[230] == 75
 
     @pytest.mark.asyncio
     async def test_guard_normal_no_interfiere(self, hass, mapa, escritor):
@@ -1593,13 +1616,46 @@ class TestTablaTouF6:
         await executor.async_aplicar_tramo("test 1")
         assert escritor.escribir_bloque.call_count == 5  # 5 bloques
 
-        # Cambio de acción: tabla nueva → presupuesto agotado → aplazada
+        # Cambio de horario del run: tabla nueva ≠ (con segmento)
+        # → presupuesto agotado → aplazada
+        tramos[1].tramo = 32  # hora distinta → segmento distinto
+        await executor.async_aplicar_tramo("test 2")
+        assert escritor.escribir_bloque.call_count == 5  # sin cambios
+
+    @pytest.mark.asyncio
+    async def test_limpiar_tabla_exenta_de_presupuesto(
+        self, hass, mapa, escritor
+    ):
+        """0.16: pasar a AUTOCONSUMO vacía la tabla sin esperar presupuesto.
+
+        Un segmento de venta caducado retiene la batería hasta el día
+        siguiente (incidente 25-nov 23:50): limpiar es el estado seguro
+        y no puede aplazarse por max_tablas_tou_hora.
+        """
+        tramos = self._plan_run_carga()
+        executor = _executor(
+            hass, mapa, escritor, tramos[1],
+            entry_data={
+                "actuador_tou": True,
+                "modo_activacion": "completo",
+                "max_tablas_tou_hora": 1,
+            },
+        )
+        self._conectar_plan(executor, tramos)
+        executor._control_activo = True
+        await executor.async_aplicar_tramo("test 1")
+        assert escritor.escribir_bloque.call_count == 5
+
+        # Presupuesto agotado (1 tabla en la hora) → el vaciado SÍ corre
         executor.coordinador_plan.tramo_actual.return_value = _tramo(
             ACCION_AUTOCONSUMO
         )
         await executor.async_aplicar_tramo("test 2")
-        assert escritor.escribir.call_count == 4  # amperajes autoconsumo
-        assert executor.estado == "dry_run"
+
+        d = self._direcciones(mapa)
+        assert all(escritor._leidos.get(addr, 0) == 0 for addr in d)
+        # Los 5 bloques difieren de la tabla aplicada → todos se escriben
+        assert escritor.escribir_bloque.call_count == 10
 
     @pytest.mark.asyncio
     async def test_nunca_se_tocan_244_249(self, hass, mapa, escritor):

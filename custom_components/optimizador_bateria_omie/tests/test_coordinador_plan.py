@@ -239,6 +239,50 @@ class TestReplanificacion:
         assert coordinador.plan is plan_antes
 
     @pytest.mark.asyncio
+    async def test_eventos_soc_contador_incrementa(
+        self, coordinador, hass, tracks
+    ):
+        """0.16: cada evento del listener cuenta (diagnóstico)."""
+        coordinador.entry.data = {"entity_id_soc_bateria": "sensor.soc"}
+        await coordinador.async_setup()
+        await _drenar(hass)
+
+        callback_soc = tracks.state.call_args[0][2]
+        previsto = coordinador.tramo_actual().soc_previsto_pct
+        for soc in (previsto + 1, previsto + 2):
+            evento = MagicMock()
+            evento.data = {"new_state": MagicMock()}
+            evento.data["new_state"].state = str(soc)
+            callback_soc(evento)
+            await _drenar(hass)
+
+        assert coordinador.eventos_soc == 2
+
+    @pytest.mark.asyncio
+    async def test_cooldown_limita_replan_por_evento(
+        self, coordinador, hass, tracks
+    ):
+        """0.16: desviación persistente → 1 replan por cooldown."""
+        coordinador.entry.data = {"entity_id_soc_bateria": "sensor.soc"}
+        await coordinador.async_setup()
+        await _drenar(hass)
+
+        callback_soc = tracks.state.call_args[0][2]
+        previsto = coordinador.tramo_actual().soc_previsto_pct
+        with patch.object(
+            coordinador, "async_recalcular", AsyncMock()
+        ) as recalc:
+            for _ in range(3):
+                evento = MagicMock()
+                evento.data = {"new_state": MagicMock()}
+                evento.data["new_state"].state = str(previsto + 20)
+                callback_soc(evento)
+                await _drenar(hass)
+
+        assert recalc.await_count == 1
+        assert coordinador.eventos_soc == 3
+
+    @pytest.mark.asyncio
     async def test_perfil_diario_0435(
         self, coordinador, hass, predictor, tracks
     ):
