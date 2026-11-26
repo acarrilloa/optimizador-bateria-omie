@@ -65,7 +65,9 @@
           "max_tablas_tou_hora": "Máximo de escrituras de tabla ToU por hora",
           "descarga_minima_backup_a": "Descarga mínima de respaldo durante carga (A; 0 = receta D1)",
           "margen_cobertura_wh": "Margen de cobertura de batería (Wh; vacío = 20 % de la capacidad)",
-          "factor_ritmo_descarga": "Factor de ritmo de consumo para replanificar (×)"
+          "factor_ritmo_descarga": "Factor de ritmo de consumo para replanificar (×)",
+          "tou_vstop_v": "Volt-stop de los puntos ToU (0.01 V; 0 = 4900)",
+          "autoconsumo_descarga": "AUTOCONSUMO arma segmento de descarga (recomendado en ToU)"
         }
       },
       "reconfigure": {
