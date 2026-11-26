@@ -1832,3 +1832,45 @@ class TestControlPersistente0154:
 
         assert llamadas["n"] == 2
         assert executor.control_activo is True
+
+
+class TestVstopConfigurable0161:
+    """0.16.1: el volt-stop del punto ToU es configurable (D2)."""
+
+    @pytest.mark.asyncio
+    async def test_vstop_configurado_se_escribe(self, hass, mapa, escritor):
+        tramos = [
+            PlanTramo(
+                fecha=HOY, tramo=40, hora="10:00",
+                accion=ACCION_CARGA_RED, potencia_bateria_w=0.0,
+                potencia_carga_red_w=2450.0, potencia_venta_red_w=0.0,
+                soc_previsto_pct=50.0,
+                precio_referencia_eur_kwh=0.08, ahorro_tramo_eur=0.0,
+            )
+        ]
+        executor = _executor(
+            hass, mapa, escritor, tramos[0],
+            entry_data={
+                "actuador_tou": True,
+                "modo_activacion": "completo",
+                "tou_vstop_v": 5350,
+            },
+        )
+        executor.coordinador_plan.plan = MagicMock(tramos=tramos)
+        executor.coordinador_plan.tramo_actual = MagicMock(
+            return_value=tramos[0]
+        )
+        executor._control_activo = True
+
+        await executor.async_aplicar_tramo("test")
+
+        d = self._direcciones(mapa)
+        assert escritor._leidos[d[12]] == 5350  # 0.16.1: configurado
+
+    @staticmethod
+    def _direcciones(mapa):
+        return [
+            mapa.direccion('estandar', f'tou_{campo}_{i}', 'control')
+            for campo in ('hora', 'potencia', 'vstop', 'soc_stop', 'flag')
+            for i in range(1, 7)
+        ]

@@ -22,7 +22,7 @@ jitter de Solarman ya no derriba el estado); las escrituras se cortan
 desde la PRIMERA observación y el fallback solo llega tras 600 s de
 caída continuada con carga activa.
 """
-# versión 0.16.0
+# versión 0.16.1
 
 import asyncio
 import logging
@@ -58,6 +58,7 @@ from custom_components.optimizador_bateria_omie.const import (
     CONF_SOC_MIN,
     CONF_SOC_RECUPERACION,
     CONF_SOC_STOP_CARGA_DEFAULT,
+    CONF_TOU_VSTOP_V,
     CONF_VERIFY_TOLERANCIA,
     CONF_VOLTAJE_BATERIA_NOMINAL,
     DEBOUNCE_TELEMETRIA,
@@ -861,7 +862,11 @@ class EjecutorControl:
         tabla[direcciones[6]] = self._clamp_tou(
             "tou_potencia_1", segmento["potencia"]
         )
-        tabla[direcciones[12]] = TOU_VSTOP_DEFAULT  # observado funcionando
+        # 0.16.1: volt-stop configurable (D2) — 4900 = 49,00 V se
+        # replicó de una tabla observada, pero es sospechoso del
+        # techo del 70 % de carga: configurable para probar 5350
+        vstop = self._param(CONF_TOU_VSTOP_V, 0) or TOU_VSTOP_DEFAULT
+        tabla[direcciones[12]] = self._clamp_tou("tou_vstop_1", int(vstop))
         tabla[direcciones[18]] = self._clamp_tou(
             "tou_soc_stop_1", segmento["soc_stop"]
         )

@@ -130,7 +130,11 @@ TOU_FLAG_VENTA = 4
 TOU_FLAG_CARGA = 5
 # Volt-stop observado en la tabla que cargó a 4-5 kW (49,00 V);
 # se replica en los puntos activos hasta pasar D2 de calibración.
+# 0.16.1: CONFIGURABLE por Reconfigurar — sospechoso del techo
+# del 70 % (una 16S LiFePO4 satura a ~53,5-54,5 V, no a 49);
+# probar con 5350 y comparar el SOC alcanzado en el valle.
 TOU_VSTOP_DEFAULT = 4900
+CONF_TOU_VSTOP_V = "tou_vstop_v"  # 0.01 V; 0/vacío = default
 DEFAULT_ACTUADOR_TOU = True
 # None = sin configurar → cae a soc_max del entry (D14/0.15.0)
 DEFAULT_SOC_STOP_CARGA_DEFAULT = None

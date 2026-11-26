@@ -63,6 +63,7 @@ from custom_components.optimizador_bateria_omie.const import (
     CONF_SOC_RECUPERACION,
     CONF_SOC_STOP_CARGA_DEFAULT,
     CONF_TELEMETRY_SOURCE,
+    CONF_TOU_VSTOP_V,
     CONF_VENTANA_HISTORICO,
     CONF_VERIFY_TOLERANCIA,
     CONF_VOLTAJE_BATERIA_NOMINAL,
@@ -224,6 +225,11 @@ CONFIG_SCHEMA = vol.Schema(
         vol.Optional(
             CONF_MAX_TABLAS_TOU_HORA, default=DEFAULT_MAX_TABLAS_TOU_HORA
         ): vol.All(vol.Coerce(int), vol.Range(min=1, max=6)),
+        # 0.16.1: volt-stop de los puntos ToU (D2) — 0 = default 4900;
+        # probar 5350 si la carga se techa en el 70 %
+        vol.Optional(CONF_TOU_VSTOP_V, default=0): vol.All(
+            vol.Coerce(int), vol.Range(min=0, max=6300)
+        ),
         # Respaldo de descarga durante CARGA (receta D1: 0). Si D1
         # confirma que la carga funciona igual con 211≠0, subir da
         # respaldo ante corte nocturno de red
