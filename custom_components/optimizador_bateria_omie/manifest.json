@@ -7,7 +7,7 @@
     "@acarrilloa"
   ],
   "config_flow": true,
-  "version": "0.16.1",
+  "version": "0.16.2",
   "requirements": [
     "numpy>=1.26",
     "pulp>=3.0,<4.0",

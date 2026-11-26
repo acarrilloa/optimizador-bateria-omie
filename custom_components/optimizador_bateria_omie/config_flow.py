@@ -12,6 +12,7 @@ from custom_components.optimizador_bateria_omie.const import (
     CONF_APLICAR_IMPUESTOS_PRECIO,
     CONF_ARRANQUE_CARGA_RED_SOC,
     CONF_ARRANQUE_CARGA_RED_V,
+    CONF_AUTOCONSUMO_DESCARGA,
     CONF_CAPACIDAD_BATERIA_KWH,
     CONF_CARGO_SISTEMA_LLANO,
     CONF_CARGO_SISTEMA_PUNTA,
@@ -71,6 +72,7 @@ from custom_components.optimizador_bateria_omie.const import (
     DEFAULT_APLICAR_IMPUESTOS_PRECIO,
     DEFAULT_ARRANQUE_CARGA_RED_SOC,
     DEFAULT_ARRANQUE_CARGA_RED_V,
+    DEFAULT_AUTOCONSUMO_DESCARGA,
     DEFAULT_CAPACIDAD_BATERIA_KWH,
     DEFAULT_CARGO_SISTEMA_LLANO,
     DEFAULT_CARGO_SISTEMA_PUNTA,
@@ -230,6 +232,12 @@ CONFIG_SCHEMA = vol.Schema(
         vol.Optional(CONF_TOU_VSTOP_V, default=0): vol.All(
             vol.Coerce(int), vol.Range(min=0, max=6300)
         ),
+        # 0.16.2: AUTOCONSUMO/MANTENER arman segmento de descarga
+        # (en ToU la tabla vacía solo flota: la casa importa)
+        vol.Optional(
+            CONF_AUTOCONSUMO_DESCARGA,
+            default=DEFAULT_AUTOCONSUMO_DESCARGA,
+        ): bool,
         # Respaldo de descarga durante CARGA (receta D1: 0). Si D1
         # confirma que la carga funciona igual con 211≠0, subir da
         # respaldo ante corte nocturno de red

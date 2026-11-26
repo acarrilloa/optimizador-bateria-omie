@@ -136,6 +136,13 @@ TOU_FLAG_CARGA = 5
 TOU_VSTOP_DEFAULT = 4900
 CONF_TOU_VSTOP_V = "tou_vstop_v"  # 0.01 V; 0/vacío = default
 DEFAULT_ACTUADOR_TOU = True
+# 0.16.2: en ToU (248=1) la tabla vacía NO autoconsume — la batería
+# flota y la casa importa (incidentes 26-nov 17:37 y 18:06 en
+# punta). Un segmento de descarga (flag 4) deja servir la casa
+# desde batería sin exportar (day-bits 249 a 0). Con el respaldo
+# activo, AUTOCONSUMO/MANTENER arman su run con soc_stop=soc_min.
+CONF_AUTOCONSUMO_DESCARGA = "autoconsumo_descarga"
+DEFAULT_AUTOCONSUMO_DESCARGA = True
 # None = sin configurar → cae a soc_max del entry (D14/0.15.0)
 DEFAULT_SOC_STOP_CARGA_DEFAULT = None
 DEFAULT_MAX_TABLAS_TOU_HORA = 2

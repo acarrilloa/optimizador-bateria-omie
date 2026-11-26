@@ -1587,10 +1587,37 @@ class TestTablaTouF6:
         assert escritor._leidos[d[24 + 1]] == 0  # sin más flags
 
     @pytest.mark.asyncio
-    async def test_autoconsumo_deja_tabla_vacia(self, hass, mapa, escritor):
+    async def test_autoconsumo_arma_segmento_descarga(
+        self, hass, mapa, escritor
+    ):
+        """0.16.2: la tabla vacía NO autoconsume en ToU — AUTOCONSUMO
+        arma un segmento de descarga (flag 4, soc_stop = soc_min)."""
         executor = _executor(
             hass, mapa, escritor, _tramo(ACCION_AUTOCONSUMO),
             entry_data={"actuador_tou": True, "modo_activacion": "completo"},
+        )
+        executor._control_activo = True
+
+        await executor.async_aplicar_tramo("test")
+
+        d = self._direcciones(mapa)
+        assert escritor._leidos[d[24]] == 4  # flag_1: descarga
+        assert escritor._leidos[d[18]] == 15  # soc_stop_1 = soc_min
+        # potencia del punto = potencia_max_descarga (5000 W)
+        assert escritor._leidos[d[6]] == 5000
+        assert escritor._leidos[232] == 0  # amperajes seguros
+
+    @pytest.mark.asyncio
+    async def test_autoconsumo_descarga_off_deja_tabla_vacia(
+        self, hass, mapa, escritor
+    ):
+        executor = _executor(
+            hass, mapa, escritor, _tramo(ACCION_AUTOCONSUMO),
+            entry_data={
+                "actuador_tou": True,
+                "modo_activacion": "completo",
+                "autoconsumo_descarga": False,
+            },
         )
         executor._control_activo = True
 
@@ -1639,6 +1666,8 @@ class TestTablaTouF6:
                 "actuador_tou": True,
                 "modo_activacion": "completo",
                 "max_tablas_tou_hora": 1,
+                # el vaciado solo ocurre con el respaldo desactivado
+                "autoconsumo_descarga": False,
             },
         )
         self._conectar_plan(executor, tramos)

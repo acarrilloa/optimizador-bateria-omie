@@ -22,7 +22,7 @@ jitter de Solarman ya no derriba el estado); las escrituras se cortan
 desde la PRIMERA observación y el fallback solo llega tras 600 s de
 caída continuada con carga activa.
 """
-# versión 0.16.1
+# versión 0.16.2
 
 import asyncio
 import logging
@@ -42,6 +42,7 @@ from custom_components.optimizador_bateria_omie.const import (
     CONF_ACTUADOR_TOU,
     CONF_ARRANQUE_CARGA_RED_SOC,
     CONF_ARRANQUE_CARGA_RED_V,
+    CONF_AUTOCONSUMO_DESCARGA,
     CONF_CONTROL_DESEADO,
     CONF_DESCARGA_MINIMA_BACKUP_A,
     CONF_DEVICE_ID_SOLARMAN,
@@ -65,6 +66,7 @@ from custom_components.optimizador_bateria_omie.const import (
     DEFAULT_ACTUADOR_TOU,
     DEFAULT_ARRANQUE_CARGA_RED_SOC,
     DEFAULT_ARRANQUE_CARGA_RED_V,
+    DEFAULT_AUTOCONSUMO_DESCARGA,
     DEFAULT_CONTROL_DESEADO,
     DEFAULT_DESCARGA_MINIMA_BACKUP_A,
     DEFAULT_DEVICE_ID_SOLARMAN,
@@ -765,10 +767,31 @@ class EjecutorControl:
         ventana es [ahora, hasta]. Fuera de medianoche: el fin se
         recorta a 23:59 (HHMM no admite 2400 y un cruce de día en un
         solo Programa 1 es ambiguo).
+
+        0.16.2: en ToU (248=1) la tabla vacía NO autoconsume — la
+        batería flota y la casa importa aunque el plan diga
+        AUTOCONSUMO (incidentes del 26-nov 17:37 y 18:06: punta con
+        SOC 62 % e importando 3,97 kW). Un segmento de descarga
+        (flag 4) deja servir la casa desde batería: sin day-bits
+        (249, siempre a 0) no hay venta a red, solo autoconsumo
+        (26-nov 17:20: tramo VENTA de 26 W con la batería cubriendo
+        838 W de casa y 0 exportado). AUTOCONSUMO/MANTENER arman su
+        run con ``soc_stop = soc_min`` salvo que se desactive
+        ``autoconsumo_descarga`` en Reconfigurar.
         """
-        if tramo.accion not in (ACCION_CARGA_RED, ACCION_VENTA_RED):
+        descarga_auto = bool(self._param(
+            CONF_AUTOCONSUMO_DESCARGA, DEFAULT_AUTOCONSUMO_DESCARGA
+        ))
+        con_segmento = tramo.accion in (
+            ACCION_CARGA_RED, ACCION_VENTA_RED,
+        ) or (
+            descarga_auto
+            and tramo.accion in (ACCION_AUTOCONSUMO, ACCION_MANTENER)
+        )
+        if not con_segmento:
             return None
         es_carga = tramo.accion == ACCION_CARGA_RED
+        # VENTA y AUTOCONSUMO comparten el flag de descarga (4)
         flag = TOU_FLAG_CARGA if es_carga else TOU_FLAG_VENTA
         soc_stop = (
             self._soc_stop_carga()
@@ -780,11 +803,16 @@ class EjecutorControl:
             final = datetime.fromisoformat(hasta_manual)
             hora_inicio = ahora.hour * 100 + ahora.minute
             hora_fin = final.hour * 100 + final.minute
-            potencia = (
-                tramo.potencia_carga_red_w
-                if es_carga
-                else abs(tramo.potencia_venta_red_w)
-            )
+            if es_carga:
+                potencia = tramo.potencia_carga_red_w
+            elif tramo.accion == ACCION_VENTA_RED:
+                potencia = abs(tramo.potencia_venta_red_w)
+            else:
+                # potencia 0 del tramo podría desactivar el punto
+                potencia = float(self._param(
+                    CONF_POTENCIA_MAX_DESCARGA,
+                    DEFAULT_POTENCIA_MAX_DESCARGA,
+                ))
             return {
                 "hora_inicio": hora_inicio,
                 "hora_fin": hora_fin,
@@ -823,14 +851,23 @@ class EjecutorControl:
         primer_hhmm = run[0].hora.split(":")
         final_idx = run[-1].tramo
         fin_min = min(final_idx * 15 + 15, 1439)  # no cruza medianoche
-        potencias = [
-            t.potencia_carga_red_w if es_carga else abs(t.potencia_venta_red_w)
-            for t in run
-        ]
+        if es_carga:
+            potencias = [t.potencia_carga_red_w for t in run]
+            potencia = max(potencias)
+        elif tramo.accion == ACCION_VENTA_RED:
+            potencias = [abs(t.potencia_venta_red_w) for t in run]
+            potencia = max(potencias)
+        else:
+            # AUTOCONSUMO/MANTENER: potencia 0 podría desactivar el
+            # punto — se fija la máxima de descarga (la exportación
+            # no existe sin day-bits: solo cubre la casa)
+            potencia = float(self._param(
+                CONF_POTENCIA_MAX_DESCARGA, DEFAULT_POTENCIA_MAX_DESCARGA
+            ))
         return {
             "hora_inicio": int(primer_hhmm[0]) * 100 + int(primer_hhmm[1]),
             "hora_fin": (fin_min // 60) * 100 + (fin_min % 60),
-            "potencia": int(max(max(potencias), 0.0)),
+            "potencia": int(max(potencia, 0.0)),
             "soc_stop": soc_stop,
             "flag": flag,
         }
@@ -846,7 +883,9 @@ class EjecutorControl:
         campos van a 0) y deja el resto de puntos desactivados: si la
         nube o el ToU propio del inversor dejasen segmentos residuales
         de venta, se limpian. CARGA_RED/VENTA_RED → segmento 1;
-        AUTOCONSUMO/MANTENER → tabla vacía (float deseado).
+        AUTOCONSUMO/MANTENER → segmento de descarga con
+        soc_stop=soc_min (0.16.2: la tabla vacía NO autoconsume en
+        ToU) salvo ``autoconsumo_descarga`` desactivado → vacía.
         """
         direcciones = self._direcciones_tabla_tou()
         tabla = {addr: 0 for addr in direcciones}
@@ -1433,8 +1472,9 @@ class EjecutorControl:
         pendientes = self._filtrar_idempotente(objetivos)
         # F6/A (24-nov-2026): tabla ToU objetivo del tramo. Con la
         # tabla como actuador, los amperajes solos no mueven energía:
-        # cada tramo ejecutable fija su segmento en 250-279 (AUTOCONSUMO/
-        # MANTENER dejan la tabla vacía = float deseado).
+        # cada tramo ejecutable fija su segmento en 250-279. 0.16.2:
+        # AUTOCONSUMO/MANTENER también arman segmento de descarga
+        # (la tabla vacía NO autoconsume en ToU, solo flota).
         tabla_objetivo = None
         if self._actuador_tou():
             hasta_manual = manual["hasta"] if manual is not None else None
