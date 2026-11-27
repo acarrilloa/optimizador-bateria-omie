@@ -145,7 +145,11 @@ CONF_AUTOCONSUMO_DESCARGA = "autoconsumo_descarga"
 DEFAULT_AUTOCONSUMO_DESCARGA = True
 # None = sin configurar → cae a soc_max del entry (D14/0.15.0)
 DEFAULT_SOC_STOP_CARGA_DEFAULT = None
-DEFAULT_MAX_TABLAS_TOU_HORA = 2
+# 0.16.3: 2/h se quedaba corto en noches de replans reactivos (el
+# valle del 26-nov no llegó al inversor hasta las 04:01); con la
+# idempotencia "equivalente en curso" la presión cae, pero sobra
+# margen para cambios de acción legítimos
+DEFAULT_MAX_TABLAS_TOU_HORA = 4
 # 0 = receta D1 pura (211=0 durante CARGA); si D1 confirma que la
 # carga funciona igual con 211≠0, subir da respaldo ante corte de red
 DEFAULT_DESCARGA_MINIMA_BACKUP_A = 0

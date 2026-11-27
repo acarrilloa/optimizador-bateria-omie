@@ -301,7 +301,8 @@ class TestSchemaF6:
         """actuador_tou on por defecto; tabla configurada."""
         datos = CONFIG_SCHEMA(dict(ENTRADA_F2))
         assert datos["actuador_tou"] is True
-        assert datos["max_tablas_tou_hora"] == 2
+        # 0.16.3: 2→4 (el 2/h agotaba la cuota con replans reactivos)
+        assert datos["max_tablas_tou_hora"] == 4
         assert datos["descarga_minima_backup_a"] == 0
         assert datos["factor_ritmo_descarga"] == 1.3
         # Sin default: caen al fallback del executor (soc_max / 20 %)

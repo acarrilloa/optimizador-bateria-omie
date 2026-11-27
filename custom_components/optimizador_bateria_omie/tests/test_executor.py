@@ -1419,9 +1419,12 @@ class TestRearmeArranqueF52:
         assert _escrituras(escritor)[211] == round(5193.0 / VOLTAJE)
 
     @pytest.mark.asyncio
-    async def test_cooldown_rearme_una_hora_por_registro(
+    async def test_rebote_229_adopta_valor_firmware(
         self, hass, mapa, escritor
     ):
+        """0.16.3: el firmware clampa 229 a 90 tras escribir 100 — el
+        valor real se adopta como objetivo efectivo y el bucle de
+        reescritura horaria (noche del 26-nov) muere en el rebote."""
         # 229 rebota: siempre se lee 90 aunque se escriba 100
         async def _leer(addr, cantidad=1):
             return [90 if addr == 229 else escritor._leidos.get(addr, 0)]
@@ -1431,12 +1434,14 @@ class TestRearmeArranqueF52:
         executor._control_activo = True
         await executor.async_aplicar_tramo("tramo 1")
 
+        # Verify fallido con relectura estable → adopción del clamp
+        assert executor._arranque_efectivo.get(229) == 90
         escrituras_229 = [
             llamada
             for llamada in escritor.escribir.call_args_list
             if llamada.args[0] == 229
         ]
-        assert len(escrituras_229) == 1  # primera vez: una reescritura
+        assert len(escrituras_229) == 1  # primer intento: rebota
 
         await executor.async_aplicar_tramo("tramo 2")
 
@@ -1445,8 +1450,37 @@ class TestRearmeArranqueF52:
             for llamada in escritor.escribir.call_args_list
             if llamada.args[0] == 229
         ]
-        # Enfriamiento: no se reescribe mientras siga rebotando
+        # Objetivo efectivo 90 == leído 90: sin reescritura ni ruido
+        # de auditoría (el cooldown ya ni se necesita)
         assert len(escrituras_229) == 1
+        assert _escrituras(escritor)[232] == 1  # el tramo corrió igual
+
+    @pytest.mark.asyncio
+    async def test_cooldown_rearme_una_hora_por_registro(
+        self, hass, mapa, escritor
+    ):
+        # 228 derivado dos veces: la segunda cae en enfriamiento (1 h)
+        escritor._leidos[228] = 4900
+        executor = _executor(hass, mapa, escritor, _tramo(ACCION_CARGA_RED))
+        executor._control_activo = True
+        await executor.async_aplicar_tramo("tramo 1")
+        escrituras_228 = [
+            llamada
+            for llamada in escritor.escribir.call_args_list
+            if llamada.args[0] == 228
+        ]
+        assert len(escrituras_228) == 1  # reescritura con verify ok
+
+        # El datalogger vuelve a pisar el 228 dentro de la hora
+        escritor._leidos[228] = 4900
+        await executor.async_aplicar_tramo("tramo 2")
+
+        escrituras_228 = [
+            llamada
+            for llamada in escritor.escribir.call_args_list
+            if llamada.args[0] == 228
+        ]
+        assert len(escrituras_228) == 1  # enfriamiento: no reescribe
         lineas = self._auditoria(hass)
         assert any(
             linea["verificado"] == "rearme_enfriamiento" for linea in lineas
@@ -1763,6 +1797,160 @@ class TestTablaTouF6:
 
         llamada = hass.services.async_call.call_args
         assert llamada.args[0] == "persistent_notification"
+
+
+class _Reloj0930:
+    """datetime fijo a las 09:30 local (idempotencia 0.16.3)."""
+
+    @staticmethod
+    def now(tz=None):
+        return datetime(2026, 11, 27, 9, 30).astimezone()
+
+
+class TestTablaEquivalente0163:
+    """0.16.3: replans que solo adelantan hora_inicio no queman cuota.
+
+    Incidente 26/27-nov: replans reactivos cada 15 min desplazaban el
+    inicio del run → tabla "nueva" ≠ aplicada → presupuesto 2/h
+    agotado → aplazadas → la carga del valle no llegó al inversor
+    hasta las 04:01 con el plan pidiéndola desde las ~03:00.
+    """
+
+    def _direcciones(self, mapa) -> list[int]:
+        return [
+            mapa.direccion("estandar", f"tou_{campo}_{i}", "control")
+            for campo in ("hora", "potencia", "vstop", "soc_stop", "flag")
+            for i in range(1, 7)
+        ]
+
+    def _tabla(self, mapa, inicio: int, fin: int) -> dict[int, int]:
+        d = self._direcciones(mapa)
+        tabla = {addr: 0 for addr in d}
+        tabla.update(
+            {d[0]: inicio, d[1]: fin, d[6]: 2750,
+             d[12]: 4900, d[18]: 95, d[24]: 5}
+        )
+        return tabla
+
+    def test_logica_de_equivalencia(self, hass, mapa, escritor):
+        executor = _executor(hass, mapa, escritor, _tramo(ACCION_CARGA_RED))
+        base = self._tabla(mapa, 915, 1000)
+        # replan típico: mismo fin, inicio adelantado al tramo actual
+        adelantada = self._tabla(mapa, 930, 1000)
+        ahora = datetime(2026, 11, 27, 9, 40)
+        assert executor._tabla_equivalente_en_curso(base, adelantada, ahora)
+        assert executor._tabla_equivalente_en_curso(adelantada, base, ahora)
+        # hora_fin distinta → el comportamiento YA cambió: escribir
+        corta = self._tabla(mapa, 930, 945)
+        assert not executor._tabla_equivalente_en_curso(base, corta, ahora)
+        # flag distinto (carga → descarga): escribir
+        flag4 = self._tabla(mapa, 930, 1000)
+        flag4[self._direcciones(mapa)[24]] = 4
+        assert not executor._tabla_equivalente_en_curso(base, flag4, ahora)
+        # tabla vacía (limpieza): nunca equivalente
+        vacia = {addr: 0 for addr in self._direcciones(mapa)}
+        assert not executor._tabla_equivalente_en_curso(base, vacia, ahora)
+        # fuera de la ventana aplicada: no es equivalente
+        antes = datetime(2026, 11, 27, 9, 10)
+        assert not executor._tabla_equivalente_en_curso(
+            base, adelantada, antes
+        )
+
+    @pytest.mark.asyncio
+    async def test_replan_que_adelanta_inicio_no_gasta_presupuesto(
+        self, hass, mapa, escritor
+    ):
+        tramos = TestTablaTouF6()._plan_run_carga()
+        executor = _executor(
+            hass, mapa, escritor, tramos[1],
+            entry_data={
+                "actuador_tou": True,
+                "modo_activacion": "completo",
+                "max_tablas_tou_hora": 1,
+            },
+        )
+        executor.coordinador_plan.plan = SimpleNamespace(
+            tramos=list(tramos)
+        )
+        executor._control_activo = True
+        with patch(
+            "custom_components.optimizador_bateria_omie.executor.datetime",
+            _Reloj0930,
+        ):
+            await executor.async_aplicar_tramo("tramo")
+            assert escritor.escribir_bloque.call_count == 5
+            # Replan: el run empieza en el tramo actual (09:30) con el
+            # MISMO fin 10:00 → equivalente → no escribe ni gasta cuota
+            executor.coordinador_plan.plan = SimpleNamespace(
+                tramos=list(tramos[1:])
+            )
+            await executor.async_aplicar_tramo("desviacion")
+        assert escritor.escribir_bloque.call_count == 5
+        # y el tramo corrió normal (sin rate_limiter de tabla)
+        assert executor._estado_simulado is None
+
+    @pytest.mark.asyncio
+    async def test_cambio_de_fin_sigue_consuming_presupuesto(
+        self, hass, mapa, escritor
+    ):
+        tramos = TestTablaTouF6()._plan_run_carga()
+        executor = _executor(
+            hass, mapa, escritor, tramos[1],
+            entry_data={
+                "actuador_tou": True,
+                "modo_activacion": "completo",
+                "max_tablas_tou_hora": 1,
+            },
+        )
+        executor.coordinador_plan.plan = SimpleNamespace(
+            tramos=list(tramos)
+        )
+        executor._control_activo = True
+        with patch(
+            "custom_components.optimizador_bateria_omie.executor.datetime",
+            _Reloj0930,
+        ):
+            await executor.async_aplicar_tramo("tramo")
+            assert escritor.escribir_bloque.call_count == 5
+            # El run se ACORTA (fin 09:45 ≠ 10:00): no es equivalente
+            # y el presupuesto (1) ya se gastó → aplazada
+            executor.coordinador_plan.plan = SimpleNamespace(
+                tramos=[tramos[1]]
+            )
+            await executor.async_aplicar_tramo("precios")
+        assert escritor.escribir_bloque.call_count == 5
+        assert executor._estado_simulado == "rate_limiter"
+
+    @pytest.mark.asyncio
+    async def test_vigilante_repara_sin_presupuesto(
+        self, hass, mapa, escritor
+    ):
+        """0.16.3: la reparación del vigilante no espera presupuesto
+        (las FALLBACK del 26-nov 03:00 quedaron aplazadas y la tabla
+        del inversor siguió derivada una hora entera)."""
+        tramos = TestTablaTouF6()._plan_run_carga()
+        executor = _executor(
+            hass, mapa, escritor, tramos[1],
+            entry_data={
+                "actuador_tou": True,
+                "modo_activacion": "completo",
+                "max_tablas_tou_hora": 1,
+            },
+        )
+        executor.coordinador_plan.plan = SimpleNamespace(tramos=tramos)
+        executor._control_activo = True
+        await executor.async_aplicar_tramo("tramo")
+        assert escritor.escribir_bloque.call_count == 5  # cuota gastada
+
+        tabla_venta = executor._objetivos_tabla_tou(
+            _tramo(ACCION_VENTA_RED, venta_w=4096.0)
+        )
+        resultado = await executor._escribir_tabla_tou(
+            None, tabla_venta, "vigilante tou",
+            forzar=True, exento_presupuesto=True,
+        )
+        assert resultado == "ok"
+        assert escritor.escribir_bloque.call_count == 10
 
 
 class TestControlPersistente0154:

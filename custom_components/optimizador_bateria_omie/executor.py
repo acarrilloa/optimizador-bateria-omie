@@ -22,7 +22,7 @@ jitter de Solarman ya no derriba el estado); las escrituras se cortan
 desde la PRIMERA observación y el fallback solo llega tras 600 s de
 caída continuada con carga activa.
 """
-# versión 0.16.2
+# versión 0.16.3
 
 import asyncio
 import logging
@@ -396,6 +396,9 @@ class EjecutorControl:
         self._max_exportacion_w: int | None = None
         self._max_exportacion_ts: datetime | None = None
         self._ts_rearme: dict[int, datetime] = {}
+        # 0.16.3: valores de arranque adoptados tras rebote del
+        # firmware (229: escrito 100, leído 90) — dejan de pelear
+        self._arranque_efectivo: dict[int, int] = {}
         # F6/A: tabla ToU como actuador
         self._tabla_tou_aplicada: dict[int, int] | None = None
         self._tabla_tou_objetivo: dict[int, int] | None = None
@@ -635,6 +638,14 @@ class EjecutorControl:
                 CONF_ARRANQUE_CARGA_RED_SOC, DEFAULT_ARRANQUE_CARGA_RED_SOC,
             )),
         }
+        # 0.16.3: si el firmware ya demostró que clampa un punto (229
+        # rebota a 90 tras escribir 100), el valor adoptado manda
+        # hasta recargar la entrada: escribir contra el clamp cada
+        # hora no lo mueve y consume rate limiter y auditoría.
+        for addr in list(objetivos):
+            efectivo = self._arranque_efectivo.get(addr)
+            if efectivo is not None:
+                objetivos[addr] = efectivo
         for addr, esperado in objetivos.items():
             try:
                 leido = (await self._escritor.leer(addr, 1))[0]
@@ -692,6 +703,24 @@ class EjecutorControl:
                 motivo=f"{motivo}: rearme arranque (leído {leido})",
             )
             self._ultimo_aplicado[addr] = esperado
+            if verificado == "fallo":
+                # 0.16.3: verify fallido con relectura estable = el
+                # firmware clampa el registro (229: escrito 100,
+                # leído 90, noche del 26-nov: reescritura y fallo cada
+                # hora): adoptar el valor real como objetivo efectivo
+                try:
+                    releido = (await self._escritor.leer(addr, 1))[0]
+                except ErrorEscrituraSolarman:
+                    releido = None
+                if releido == leido:
+                    self._arranque_efectivo[addr] = leido
+                    self._ultimo_aplicado[addr] = leido
+                    _LOGGER.warning(
+                        "El firmware limita %d a %d (el objetivo %d no "
+                        "se sostiene): valor del inversor adoptado "
+                        "como objetivo efectivo de la sesión",
+                        addr, leido, esperado,
+                    )
         return True
 
     async def _refrescar_max_exportacion(self) -> None:
@@ -914,6 +943,44 @@ class EjecutorControl:
         )
         return tabla
 
+    def _tabla_equivalente_en_curso(
+        self,
+        aplicada: dict[int, int] | None,
+        objetivo: dict[int, int] | None,
+        ahora: datetime | None = None,
+    ) -> bool:
+        """¿Sirven ambas tablas el instante actual de forma idéntica?
+
+        0.16.3: los replans reactivos (desviación/cobertura) corren
+        cada 15 min y el run del plan arranca en el tramo actual, así
+        que ``hora_inicio`` se desplaza en cada recálculo. Cada tabla
+        "nueva" consumía presupuesto (2/h) y las aplazadas dejaban la
+        tabla del inversor caducada durante horas (incidente 26/27-
+        nov: el plan pedía carga desde las ~03:00 y la tabla no llegó
+        al inversor hasta las 04:01). Si flag, potencia, vstop,
+        soc_stop y hora_fin coinciden y AMBAS ventanas cubren el
+        instante actual, el inversor se comporta igual: reescribir
+        sería ruido que quema presupuesto.
+        """
+        if not aplicada or not objetivo:
+            return False
+        d = self._direcciones_tabla_tou()
+        # flag, potencia, vstop, soc_stop y hora_fin deben coincidir
+        for pos in (24, 6, 12, 18, 1):
+            if aplicada.get(d[pos], 0) != objetivo.get(d[pos], 0):
+                return False
+        if objetivo.get(d[24], 0) == 0:
+            return False  # limpieza de tabla: nunca es equivalente
+        actual = (ahora or datetime.now()).astimezone()
+        hhmm = actual.hour * 100 + actual.minute
+
+        def _cubre(tabla: dict[int, int]) -> bool:
+            inicio = tabla.get(d[0], 0)
+            fin = tabla.get(d[1], 0)
+            return 0 < inicio <= hhmm < fin
+
+        return _cubre(aplicada) and _cubre(objetivo)
+
     def _presupuesto_tablas(self) -> bool:
         """¿Queda presupuesto de tablas en la ventana de 1 h? (2/h)."""
         ahora = datetime.now(tz=UTC)
@@ -933,6 +1000,7 @@ class EjecutorControl:
         tabla: dict[int, int],
         motivo: str,
         forzar: bool = False,
+        exento_presupuesto: bool = False,
     ) -> str:
         """Escribe la tabla si cambió, por bloques de 6 registros.
 
@@ -945,9 +1013,26 @@ class EjecutorControl:
         excepciones de escritura dejando auditoría audible). Con
         ``forzar`` (reparación del vigilante) se salta la idempotencia:
         la tabla del inversor ya no coincide aunque el objetivo sea el
-        mismo.
+        mismo. 0.16.3: ``exento_presupuesto`` (vigilante) no espera
+        presupuesto, y una tabla "equivalente en curso" (replan que
+        solo adelanta hora_inicio) no se escribe ni gasta cuota.
         """
         if tabla == self._tabla_tou_aplicada and not forzar:
+            return "igual"
+        if (
+            not forzar
+            and self._tabla_equivalente_en_curso(
+                self._tabla_tou_aplicada, tabla
+            )
+        ):
+            _LOGGER.debug(
+                "Tabla ToU equivalente en curso (hora_inicio %d → %d): "
+                "no se reescribe",
+                (self._tabla_tou_aplicada or {}).get(
+                    self._direcciones_tabla_tou()[0], 0
+                ),
+                tabla.get(self._direcciones_tabla_tou()[0], 0),
+            )
             return "igual"
         # Blindaje defensivo: la tabla solo puede ser 250-279 (YAML)
         direcciones = self._direcciones_tabla_tou()
@@ -955,7 +1040,7 @@ class EjecutorControl:
             "tabla ToU fuera del rango esperado 250-279"
         )
         if (
-            not self._presupuesto_tablas()
+            not exento_presupuesto
             # 0.16: limpiar la tabla (AUTOCONSUMO/MANTENER) es el
             # estado SEGURO — un segmento de venta caducado retiene la
             # batería hasta el día siguiente (incidente 25-nov 23:50:
@@ -963,6 +1048,7 @@ class EjecutorControl:
             # esperar presupuesto: la punta consumió los 2/h y el
             # "aplazada" dejaba el segmento muerto en el inversor
             and not all(v == 0 for v in tabla.values())
+            and not self._presupuesto_tablas()
         ):
             _LOGGER.warning(
                 "Presupuesto de tablas ToU agotado: %d/%d en la última "
@@ -1106,7 +1192,14 @@ class EjecutorControl:
                 "Verifica la conectividad del datalogger."
             )
             return
-        if leida == self._tabla_tou_objetivo:
+        # 0.16.3: una deriva SOLO en hora_inicio con la ventana aún
+        # vigente no es deriva: el inversor sirve el instante igual
+        if (
+            leida == self._tabla_tou_objetivo
+            or self._tabla_equivalente_en_curso(
+                leida, self._tabla_tou_objetivo
+            )
+        ):
             self._ts_vigilante = None
             return
         _LOGGER.warning(
@@ -1115,7 +1208,11 @@ class EjecutorControl:
         )
         try:
             resultado = await self._escribir_tabla_tou(
-                None, self._tabla_tou_objetivo, "vigilante tou", forzar=True
+                None,
+                self._tabla_tou_objetivo,
+                "vigilante tou",
+                forzar=True,
+                exento_presupuesto=True,
             )
         except ErrorEscrituraSolarman as err:
             self._ts_vigilante = ahora_utc
